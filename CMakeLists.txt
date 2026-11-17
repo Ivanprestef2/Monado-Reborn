@@ -207,9 +207,15 @@ else()
   # [XCDE] T-LINUX-FSR3 / T-FSR4-LITE: the optional native upscaler components (their own scripts; a failure only
   # leaves that upscaler unavailable)
   option(MONADO_NATIVE_FSR "Build the optional native FSR 3 / FSR 4 Lite components" ON)
+  set(MONADO_FSR3_SDK "1.1.4" CACHE STRING
+      "Native FSR 3 SDK generation: 1.1.4 = FSR 3.1.4 GLSL, 2.4.0 = FSR 3.1.6 extracted SPIR-V")
+  set_property(CACHE MONADO_FSR3_SDK PROPERTY STRINGS "1.1.4" "2.4.0")
+  if(NOT MONADO_FSR3_SDK MATCHES "^(1\\.1\\.4|2\\.4\\.0)$")
+    message(FATAL_ERROR "MONADO_FSR3_SDK must be 1.1.4 or 2.4.0 (got '${MONADO_FSR3_SDK}')")
+  endif()
   if(MONADO_NATIVE_FSR)
     add_custom_target(native_fsr ALL
-      COMMAND bash -c "scripts/build_fsr3_linux.sh || echo 'warning: native FSR 3 not built (see third_party/fsr3_native/README.md)' >&2"
+      COMMAND bash -c "scripts/build_fsr3_linux.sh --sdk-version '${MONADO_FSR3_SDK}' || echo 'warning: native FSR 3 not built (see third_party/fsr3_native/README.md)' >&2"
       COMMAND bash -c "scripts/build_fsr4_linux.sh || echo 'warning: native FSR 4 Lite not built (see third_party/fsr4_native/README.md)' >&2"
       COMMAND bash -c "[[ ! -d build/fsr4/assets/lite || -e build/linux/fsr4 ]] || ln -s ../fsr4/assets build/linux/fsr4"
       WORKING_DIRECTORY "${ROOT}" USES_TERMINAL VERBATIM)

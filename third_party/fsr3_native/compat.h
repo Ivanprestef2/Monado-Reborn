@@ -29,4 +29,13 @@ inline int strcpy_s(char *d, size_t n, const char *s) {
 template<class... A> int sprintf_s(char *d, size_t n, const char *f, A... a) { return std::snprintf(d,n,f,a...); }
 template<size_t N, class... A> int sprintf_s(char (&d)[N], const char *f, A... a) { return std::snprintf(d,N,f,a...); }
 
-#include <FidelityFX/host/ffx_util.h>
+// [XCDE] The 1.1.4 SDK exposes ffx_util.h under FidelityFX/host; SDK 2.x keeps it
+// under api/internal and the host sources include it themselves.
+#if defined(__has_include)
+#  if __has_include(<FidelityFX/host/ffx_util.h>)
+#    include <FidelityFX/host/ffx_util.h>
+#  endif
+#endif
+#ifndef UNREFERENCED_PARAMETER
+#define UNREFERENCED_PARAMETER(x) (void)(x)
+#endif

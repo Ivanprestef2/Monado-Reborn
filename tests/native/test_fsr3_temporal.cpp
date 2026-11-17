@@ -284,7 +284,8 @@ int main(int argc, char **argv) {
     d.cameraFar = FLT_MAX;
     d.cameraFovAngleVertical = 1;
     d.viewSpaceToMetersFactor = 1;
-    d.enableSharpening = false;
+    // FSR3_SHARPEN=1 also exercises the accumulate-sharpen and RCAS pipelines.
+    d.enableSharpening = getenv("FSR3_SHARPEN") != nullptr;
     d.sharpness = 0.3f;
     result = ffxDispatch(&context, &d.header);
     assert(result == 0);

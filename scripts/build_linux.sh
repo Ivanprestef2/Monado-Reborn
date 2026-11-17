@@ -34,7 +34,11 @@ rtdir=build/linux/rt
 # [XCDE] T-LINUX-FSR3 / T-FSR4-LITE: the optional native temporal upscalers, loaded at run time from build/linux/.
 # XCDE_NATIVE_FSR=0 skips them; a failed component build only leaves that upscaler unavailable.
 if [[ ${XCDE_NATIVE_FSR:-1} != 0 ]]; then
-  scripts/build_fsr3_linux.sh || echo 'warning: native FSR 3 not built (needs git, glslangValidator; see third_party/fsr3_native/README.md)' >&2
+  if [[ ${XCDE_FSR3_SDK:-1.1.4} == 2.4.0 ]]; then
+    scripts/build_fsr3_linux.sh --sdk-version 2.4.0 || echo 'warning: native FSR 3.1.6 not built (needs git, the pinned 2.4.0 signed DLL; see third_party/fsr3_native/README.md)' >&2
+  else
+    scripts/build_fsr3_linux.sh || echo 'warning: native FSR 3 not built (needs git, glslangValidator; see third_party/fsr3_native/README.md)' >&2
+  fi
   scripts/build_fsr4_linux.sh || echo 'warning: native FSR 4 Lite not built (see third_party/fsr4_native/README.md)' >&2
   # FSR 4 Lite model assets (tools/prepare_fsr4_lite.py, once) are looked up beside the executable
   [[ ! -d build/fsr4/assets/lite || -e build/linux/fsr4 ]] || ln -s ../fsr4/assets build/linux/fsr4

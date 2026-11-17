@@ -5,16 +5,21 @@ are built. FP32 by default; FP16 variants of the two pyramid passes on request
 (XCDE_FSR3_FP16=1, GPU with shaderFloat16) and wave64 on request (XCDE_FSR3_WAVE64=1).
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import struct
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 REVISION = 'c6efa6bf7f2027b3ec94f28578bb5965eabb9e55'
+REVISION_240 = '7539ae8b6568ad29ed78a753404351daf3b5cca7'
 URL = 'https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK.git'
+DLL_240_SHA256 = '4a7e895af6e0b615d40a84d59eb8c2b1054ad91cdd0c739567940270d51bdab7'
 PASSES = ['prepare_inputs', 'luma_pyramid', 'shading_change_pyramid', 'shading_change',
           'prepare_reactivity', 'luma_instability', 'accumulate', 'accumulate', 'rcas',
           'debug_view', 'autogen_reactive']
@@ -122,17 +127,142 @@ def extract_amd_modules(path):
     print(f'FSR3: using {len(found)} SPIR-V modules from {path.name}')
     return found
 
+def patch_text(path, old, new, marker=None):
+    """Apply one idempotent source patch to the generated SDK checkout."""
+    text = path.read_text()
+    if marker and marker in text:
+        return
+    if old not in text:
+        raise RuntimeError(f'{path}: expected 1.1.4/2.4.0 source text not found')
+    path.write_text(text.replace(old, new, 1))
+
+
+def build_240(args):
+    """Build the native FSR 3.1.6 Vulkan component from SDK 2.4.0's signed DLL.
+
+    SDK 2.x no longer ships GLSL or generated permutation headers.  The signed
+    upscaler DLL is the only artifact with the SPIR-V modules; extract them with
+    tools/extract_fsr3_240_blobs.py and compile the 2.4.0 host/backend against
+    the 1.1.4-compatible adapter entry points.
+    """
+    checkout = (args.sdk or ROOT/'build/reference/ffx-sdk-2.4.0').resolve()
+    if not checkout.exists():
+        run(['git','clone','--filter=blob:none','--depth','1','--branch','v2.4.0','--no-checkout',URL,checkout])
+        run(['git','-C',checkout,'sparse-checkout','set',
+             'Kits/FidelityFX/api','Kits/FidelityFX/backend/vk','Kits/FidelityFX/upscalers',
+             'Kits/FidelityFX/signedbin','Kits/FidelityFX/docs'])
+        run(['git','-C',checkout,'checkout',REVISION_240])
+    actual = subprocess.check_output(['git','-C',checkout,'rev-parse','HEAD'],text=True).strip()
+    if actual != REVISION_240:
+        raise RuntimeError(f'Expected AMD SDK {REVISION_240}, got {actual}')
+    kits = checkout/'Kits/FidelityFX'
+    if not (kits/'docs/license.md').is_file():
+        run(['git','-C',checkout,'sparse-checkout','add','Kits/FidelityFX/docs'])
+    # Pick the pinned signed upscaler DLL.  --amd-dll is accepted when it is the
+    # same file; the SDK checkout's signedbin copy is the default.
+    signed = kits/'signedbin'/'amd_fidelityfx_upscaler_vk.dll'
+    dll = Path(args.amd_dll) if args.amd_dll else signed
+    if not dll.is_file() or hashlib.sha256(dll.read_bytes()).hexdigest() != DLL_240_SHA256:
+        if args.amd_dll:
+            print(f'FSR3 2.4.0: {dll} is not the pinned upscaler DLL; using {signed}', file=sys.stderr)
+        dll = signed
+    if not dll.is_file() or hashlib.sha256(dll.read_bytes()).hexdigest() != DLL_240_SHA256:
+        raise RuntimeError(f'FSR3 2.4.0: {dll} is missing or not the pinned upscaler DLL ({DLL_240_SHA256})')
+
+    # [XCDE] Linux/Clang and direct-host patches.  The signed DLL is unchanged;
+    # only the reference sources in build/reference are patched.
+    patch_text(kits/'api/include/ffx_api.h',
+               '#define FFX_API_ENTRY __declspec(dllexport)',
+               '#if defined(_WIN32)\n#define FFX_API_ENTRY __declspec(dllexport)\n#else\n#define FFX_API_ENTRY\n#endif',
+               marker='#if defined(_WIN32)\n#define FFX_API_ENTRY')
+    patch_text(kits/'upscalers/fsr3/include/ffx_fsr3upscaler.h',
+               '#define FFX_FSR3UPSCALER_CONTEXT_SIZE (FFX_SDK_DEFAULT_CONTEXT_SIZE)',
+               '#define FFX_FSR3UPSCALER_CONTEXT_SIZE (4 * FFX_SDK_DEFAULT_CONTEXT_SIZE)',
+               marker='#define FFX_FSR3UPSCALER_CONTEXT_SIZE (4 *')
+    host = kits/'upscalers/fsr3/internal/ffx_fsr3upscaler.cpp'
+    patch_text(host, '#include "../../../api/internal/ffx_backends.h"\n', '',
+               marker='FfxErrorCode GetResourceSizeFromDescription(FfxDevice device')
+    if 'FfxErrorCode GetResourceSizeFromDescription(FfxDevice device' not in host.read_text():
+        patch_text(host, '#include "ffx_fsr3upscaler_shaderblobs.h"',
+                   '#include "ffx_fsr3upscaler_shaderblobs.h"\n\n'
+                   '// [XCDE] direct host build: declared in ffx_backends.h, provided by the Vulkan backend.\n'
+                   'FfxErrorCode GetResourceSizeFromDescription(FfxDevice device, const FfxCreateResourceDescription* createResourceDescription, uint64_t* sizeInBytes, uint64_t* alignment = nullptr);')
+    vk = kits/'backend/vk/ffx_vk.cpp'
+    patch_text(vk, '#include "../../api/internal/ffx_blob_decompress.h"\n', '',
+               marker='[XCDE] 2.4.0 Linux build')
+    if '[XCDE] 2.4.0 Linux build' not in vk.read_text():
+        old = ('    std::vector<uint8_t> shaderCodeScratch;\n'
+               '    const void*          shaderCodeData = nullptr;\n'
+               '    uint32_t             shaderCodeSize = 0;\n'
+               '    ffxDecompressShaderBlob(pShaderBlob->data, pShaderBlob->size, shaderCodeScratch, &shaderCodeData, &shaderCodeSize);\n')
+        new = ('    // [XCDE] 2.4.0 Linux build: the extracted shader tables are stored uncompressed.\n'
+               '    const void* shaderCodeData = pShaderBlob->data;\n'
+               '    uint32_t    shaderCodeSize = pShaderBlob->size;\n')
+        patch_text(vk, old, new)
+
+    out = (args.work or ROOT/'build/fsr3-240').resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    # The 2.4.0 host includes a generated branch hash that the public tag does
+    # not ship.  It is not used by the Linux build.
+    (out/'git_hash_branch.h').write_text('#pragma once\n')
+    (out/'glue.cpp').write_text(
+        '#include <ffx_interface.h>\n#include <ffx_vk.h>\n'
+        'FfxErrorCode GetResourceSizeFromDescription(FfxDevice device, const FfxCreateResourceDescription* desc, uint64_t* size, uint64_t* alignment) {\n'
+        '    return ffxGetResourceSizeFromDescriptionVK(device, desc, size, alignment);\n}\n')
+    run([sys.executable, str(ROOT/'tools/extract_fsr3_240_blobs.py'),
+         '--dll', str(dll), '--output', str(out/'blobs.cpp')])
+
+    common = ['-std=c++17','-O2','-march=x86-64-v2','-fPIC','-fvisibility=hidden',
+              '-Wno-deprecated-declarations',
+              '-include', str(ROOT/'third_party/fsr3_native/compat.h'),
+              '-I'+str(ROOT/'third_party'), '-I'+str(out),
+              '-I'+str(kits/'upscalers/fsr3/include'), '-I'+str(kits/'upscalers/fsr3/internal'),
+              '-I'+str(kits/'upscalers/include'), '-I'+str(kits/'api/internal'),
+              '-I'+str(kits/'api/include'), '-I'+str(kits/'backend/vk')]
+    compiler = shlex.split(os.environ.get('CXX','clang++'))
+    sources = [ROOT/'third_party/fsr3_native/adapter_240.cpp', out/'blobs.cpp', out/'glue.cpp',
+               kits/'upscalers/fsr3/internal/ffx_fsr3upscaler.cpp', kits/'backend/vk/ffx_vk.cpp',
+               kits/'api/internal/ffx_assert.cpp', kits/'api/internal/ffx_object_management.cpp']
+    objects = []
+    for source in sources:
+        obj = out/(source.stem + '.o')
+        run([*compiler, *common, '-c', source, '-o', obj])
+        objects.append(obj)
+    msg = out/'ffx_message.o'
+    run([*compiler, *common, '-include', str(kits/'api/internal/ffx_util.h'),
+         '-c', kits/'api/internal/ffx_message.cpp', '-o', msg])
+    objects.append(msg)
+
+    target = (args.output or ROOT/'build/linux/libmonado_fsr3.so').resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    run([*compiler, *common, '-shared', *objects, '-o', str(target)+'.tmp', '-lvulkan', '-Wl,--no-undefined'])
+    os.replace(str(target)+'.tmp', target)
+    (out/'provenance.json').write_text(json.dumps(
+        {'sdk':'2.4.0','fsr':'3.1.6','commit':actual,'dll_sha256':DLL_240_SHA256}, indent=2)+'\n')
+    shutil.copy2(kits/'docs/license.md', out/'LICENSE-AMD.md')
+    print('Built', target, '(FSR 3.1.6, SDK 2.4.0)')
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--sdk', type=Path)
     default_amd = ROOT/'build/reference/ffx-sdk-linux/PrebuiltSignedDLL/amd_fidelityfx_vk.dll'
     ap.add_argument('--amd-dll', default=os.environ.get('MONADO_FSR3_AMD_DLL', str(default_amd) if default_amd.exists() else ''),
-                    help='pinned AMD prebuilt amd_fidelityfx_vk.dll whose FSR3 SPIR-V is used where AMD uses it ("" = GLSL only)')
+                    help='pinned AMD prebuilt DLL: 1.1.4 amd_fidelityfx_vk.dll (optional FSR3 SPIR-V) or '
+                         '2.4.0 amd_fidelityfx_upscaler_vk.dll (required by --sdk-version 2.4.0)')
     ap.add_argument('--target', choices=('linux', 'windows'), default='linux')
+    ap.add_argument('--sdk-version', choices=('1.1.4', '2.4.0'),
+                    default=os.environ.get('XCDE_FSR3_SDK', '1.1.4'),
+                    help='FidelityFX SDK generation: 1.1.4 native GLSL (default) or 2.4.0 signed-DLL SPIR-V extraction')
     # CMake build trees pass their own paths; the scripts keep the defaults.
     ap.add_argument('--output', type=Path, help='component to write (default: build/monado_fsr3.dll or build/linux/libmonado_fsr3.so)')
     ap.add_argument('--work', type=Path, help='folder for generated sources/SPIR-V (default: build/fsr3[-windows])')
     args = ap.parse_args()
+    if args.sdk_version == '2.4.0':
+        if args.target != 'linux':
+            raise SystemExit('FSR3 2.4.0 extraction is Linux-only for now')
+        build_240(args)
+        return
     default_sdk = ROOT/('build/reference/ffx-sdk-windows' if args.target == 'windows' else 'build/reference/ffx-sdk-1.1.4')
     checkout = (args.sdk or default_sdk).resolve()
     if not checkout.exists():
