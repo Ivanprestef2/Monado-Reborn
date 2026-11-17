@@ -105,6 +105,16 @@ def main():
             payloads.append(fsr3)
             shutil.copytree(ROOT / 'third_party/fsr3_native', docs / 'fsr3-source')
             shutil.copy2(ROOT / 'tools/build_fsr3_linux.py', docs / 'fsr3-source/build_fsr3_linux.py')
+            # [XCDE] SDK 2.4.0 opt-in build: the signed DLL's MIT notice and the
+            # provenance of the extracted SPIR-V travel with the component.
+            fsr3_240 = build / 'fsr3-240'
+            if (fsr3_240 / 'LICENSE-AMD.md').is_file():
+                shutil.copy2(fsr3_240 / 'LICENSE-AMD.md', docs / 'fsr3-source' / 'LICENSE-AMD-2.4.0.md')
+                shutil.copy2(ROOT / 'tools/extract_fsr3_240_blobs.py', docs / 'fsr3-source' / 'extract_fsr3_240_blobs.py')
+            if (fsr3_240 / 'provenance.json').is_file():
+                shutil.copy2(fsr3_240 / 'provenance.json', docs / 'fsr3-source' / 'provenance-2.4.0.json')
+            if (build / 'fsr3' / 'provenance.json').is_file():
+                shutil.copy2(build / 'fsr3' / 'provenance.json', docs / 'fsr3-source' / 'provenance-1.1.4.json')
         else:
             print('note: no native FSR 3 component (scripts/build_fsr3_linux.sh): packaged without it')
         assets = a.fsr4_assets.resolve()
