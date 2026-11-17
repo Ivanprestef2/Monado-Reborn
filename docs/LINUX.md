@@ -50,8 +50,8 @@ upscaler is just unavailable (`XCDE_NATIVE_FSR=0` skips both).
   without them its Lanczos table was half 1.0 and stationary detail blurred (`tests/native/test_fsr3_temporal.cpp`).
   `XCDE_FSR3_SDK=2.4.0 scripts/build_linux.sh` (or CMake `-DMONADO_FSR3_SDK=2.4.0`) instead builds FSR 3.1.6 from the
   pinned SDK 2.4.0 signed DLL: `tools/extract_fsr3_240_blobs.py` extracts the wave32/FP32 SPIR-V permutation tables and
-  the 2.4.0 host/backend are compiled against `adapter_240.cpp`. It is a Linux upscaling-only prototype; the default
-  remains 1.1.4 until gameplay validation.
+  the 2.4.0 host/backend are compiled against `adapter_240.cpp`. It is a Linux upscaling-only prototype, validated in
+  game with no visible regression (NVIDIA GTX 1050 Ti); the default remains 1.1.4 pending a performance comparison.
 - **AMD FSR 4 Lite INT8** (`build/linux/libmonado_fsr4.so`, `scripts/build_fsr4_linux.sh`): a native Vulkan
   implementation of FSR 4.1.2's Lite graph (GPL-2.0-or-later, `third_party/fsr4_native/`, ADR 0012). It needs the
   Lite model assets, prepared once with `tools/prepare_fsr4_lite.py` from AMD's public SDK 2.4.0 (into

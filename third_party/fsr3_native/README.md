@@ -58,8 +58,10 @@ The resulting `build/linux/libmonado_fsr3.so` reports `FSR 3.1.6 native Vulkan
 (FP32)` and passes `tests/native/test_fsr3_temporal.cpp` with both the 1.1.4
 (`FFX_BACKEND_TYPE=3`) and 2.4.0 (`0x01000003`) backend descriptor forms. It is
 upscaling-only: frame generation, the loader/effect DLL split, full FSR 4.1.2
-and ML frame generation are not part of this component. The default build stays
-on 1.1.4 until the 3.1.6 path has gameplay validation.
+and ML frame generation are not part of this component. In-game validation on
+an NVIDIA GTX 1050 Ti showed no visible regression versus 3.1.4 (possibly
+slightly less shimmering); the default build stays on 1.1.4 until a performance
+comparison is available.
 
 The runtime requires extended storage-image formats, formatless storage-image
 writes and compute subgroup quad operations. It reuses the existing depth,

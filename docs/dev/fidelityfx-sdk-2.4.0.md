@@ -30,9 +30,11 @@ research report; the branch also contains the validated API-header prototype
   `FfxShaderBlobInfo` arrays and permutation tables, decompresses the selected
   wave32/FP32 SPIR-V, and the 2.4.0 host/backend compile against
   `adapter_240.cpp`. It reports FSR 3.1.6 and passes the native regression with
-  both backend descriptor forms. Recommendation: **keep 1.1.4 as the default
-  Linux component** until the 3.1.6 path has gameplay/quality validation, and
-  keep FSR 4 Lite as the Linux ML path.
+  both backend descriptor forms. A first in-game run (NVIDIA GTX 1050 Ti,
+  driver 580.196.07) showed no visible regression and possibly slightly less
+  shimmering; performance is not measured yet. Recommendation: **keep 1.1.4 as
+  the default Linux component** until the 3.1.6 path has a performance
+  comparison, and keep FSR 4 Lite as the Linux ML path.
 - **FSR 4 preparation is already pinned to 2.4.0** (`tools/prepare_fsr4_lite.py`,
   `tools/fsr4_prepare.py`, ADR 0012). Only the `third_party/fsr4cap/ffx` headers
   are still from 2.3.0; the differences that matter are small and are listed in
@@ -421,9 +423,23 @@ exercises the accumulate-sharpen and RCAS pipelines; the values also match
 1.1.4 exactly (`0.0314/0.3555`, `0.0026/0.3977`, `0.0308/0.4431`). CMake builds
 the same target with `-DMONADO_FSR3_SDK=2.4.0`; the default stays `1.1.4`.
 
-Not covered yet: real-game image quality/performance of 3.1.6 versus 3.1.4,
-the FP16 and wave64 permutation sets, frame generation, and the Windows
-loader/effect-DLL split (section 5).
+In-game validation (2026-11-17): with `upscaler = fsr3` at 1920x1080 on an
+NVIDIA GTX 1050 Ti (driver 580.196.07, Vulkan 1.4), the runtime log reports
+`[tmp] FSR context 1920x1080 (FSR 3.1.6 native Vulkan (FP32))` and the game
+showed no visible regression versus 3.1.4; a slight reduction in shimmering is
+plausible but was not confirmed by a side-by-side capture. This is a
+non-AMD Vulkan result; RDNA 2/3 has not been tried. GPU time was not measured.
+
+The remaining performance check needs no rebuild: run `build/linux/monado
+targets` once per component with `MONADO_FSR3_LIBRARY` pointing at
+`libmonado_fsr3_114check.so` or the 3.1.6 `libmonado_fsr3.so`, set
+`XCDE_METRICS=<file>.csv`, play the same save/route, then compare:
+`python tools/performance_report.py <3.1.6>.csv --compare <1.1.4>.csv
+--start-frame <N>` (look at `gpu_ms_p50`; `frame_ms` includes V-Sync).
+
+Not covered yet: performance of 3.1.6 versus 3.1.4, the FP16 and wave64
+permutation sets, frame generation, and the Windows loader/effect-DLL split
+(section 5).
 
 ## 7. FSR 4 Lite and fsr4cap
 
@@ -480,8 +496,9 @@ The extraction + host/backend port from section 6.1 is implemented behind
 `--sdk-version 2.4.0` / `-DMONADO_FSR3_SDK=2.4.0` and passes the native
 regression. Remaining work before changing the default:
 
-1. A/B the real game against 3.1.4 (quality, ghosting, stationary detail,
-   performance) on RDNA 2/3 and at least one non-AMD Vulkan device.
+1. Measure GPU time against 3.1.4 (`XCDE_METRICS`, `gpu_ms_p50`) on the same
+   save/route; the quality pass was subjective only. Broaden the quality check
+   to RDNA 2/3 and a second non-AMD device.
 2. Validate the prepare-inputs base permutation choice and, if needed, ship the
    FP16/wave64 sets (the backend does not request wave64 today).
 3. Run the full Linux runtime/launcher smoke test with the 2.4.0 component and
@@ -506,9 +523,11 @@ regression. Remaining work before changing the default:
   The 2.4.0/3.1.6 component (`scripts/build_fsr3_linux.sh --sdk-version 2.4.0`)
   passes both backend forms with the same frame 0/7/31 values. `FSR3_SHARPEN=1`
   (accumulate-sharpen + RCAS) also matches 1.1.4 exactly.
+- In-game: the 3.1.6 component runs at 1920x1080 on an NVIDIA GTX 1050 Ti
+  (driver 580.196.07) with no visible regression versus 3.1.4. Performance
+  comparison and formal side-by-side captures are still pending.
 - Not verified: any Windows 2.4.0 DLL path, FSR 4 full, ML FG, driver-provided
-  versions, actual game image quality/performance of 3.1.6, FP16/wave64
-  permutations.
+  versions, 3.1.6 performance, FP16/wave64 permutations.
 
 ## 10. Open questions
 
@@ -520,9 +539,10 @@ regression. Remaining work before changing the default:
    and does the game's near/far convention match the ML provider's expectations?
 4. Which Windows test hardware is available for RX 6000 / RX 9000 / NVIDIA
    fallback, and can we run the native test under Wine with the 2.4.0 loader?
-5. Does 3.1.6's quality/performance justify making it the default Linux
-   component? The prototype answers feasibility; gameplay A/B, the FP16/wave64
-   sets and the prepare-inputs permutation choice still need validation.
+5. Does 3.1.6's measured performance justify making it the default Linux
+   component? The quality gate passed on one device (no visible regression);
+   the FP16/wave64 sets and the prepare-inputs permutation choice still need
+   validation.
 
 ## Appendix A - Useful commands
 
