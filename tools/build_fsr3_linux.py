@@ -148,9 +148,14 @@ def build_240(args):
     checkout = (args.sdk or ROOT/'build/reference/ffx-sdk-2.4.0').resolve()
     if not checkout.exists():
         run(['git','clone','--filter=blob:none','--depth','1','--branch','v2.4.0','--no-checkout',URL,checkout])
-        run(['git','-C',checkout,'sparse-checkout','set',
-             'Kits/FidelityFX/api','Kits/FidelityFX/backend/vk','Kits/FidelityFX/upscalers',
-             'Kits/FidelityFX/signedbin','Kits/FidelityFX/docs'])
+        # [XCDE] only the Vulkan upscaler DLL is needed; cone mode would fetch the
+        # whole signedbin directory (163 MB of DX12 and frame-generation DLLs).
+        run(['git','-C',checkout,'sparse-checkout','set','--no-cone',
+             '/Kits/FidelityFX/api/',
+             '/Kits/FidelityFX/backend/vk/',
+             '/Kits/FidelityFX/upscalers/',
+             '/Kits/FidelityFX/signedbin/amd_fidelityfx_upscaler_vk.dll',
+             '/Kits/FidelityFX/docs/'])
         run(['git','-C',checkout,'checkout',REVISION_240])
     actual = subprocess.check_output(['git','-C',checkout,'rev-parse','HEAD'],text=True).strip()
     if actual != REVISION_240:
