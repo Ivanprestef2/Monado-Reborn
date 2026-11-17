@@ -7,34 +7,8 @@
 // before T213's HUD composite) into fg_hl, handed over as HUDLessColor - the swapchain takes the HUD as the difference
 // and composites it over the generated frames instead of moving it with the scene's motion (user: HUD smeared sideways).
 #include "ffx_api/ffx_framegeneration.h"
-
-// (ffx_api/vk/ffx_api_vk.h is C++-only: the declarations used here, as there)
-#define FFX_API_CREATE_CONTEXT_DESC_TYPE_FGSWAPCHAIN_VK 0x40001u
-#define FFX_API_QUERY_DESC_TYPE_FGSWAPCHAIN_FUNCTIONS_VK 0x40005u
-typedef VkResult (*PFN_vkQueueSubmitFFXAPI)(uint32_t submitCount, const VkSubmitInfo *pSubmits, VkFence fence);
-struct VkQueueInfoFFXAPI { VkQueue queue; uint32_t familyIndex; PFN_vkQueueSubmitFFXAPI submitFunc; };
-struct ffxCreateContextDescFrameGenerationSwapChainVK {
-    ffxCreateContextDescHeader header;
-    VkPhysicalDevice physicalDevice;
-    VkDevice device;
-    VkSwapchainKHR *swapchain;
-    VkAllocationCallbacks *allocator;
-    VkSwapchainCreateInfoKHR createInfo;
-    struct VkQueueInfoFFXAPI gameQueue, asyncComputeQueue, presentQueue, imageAcquireQueue;
-};
-typedef VkResult (*PFN_vkCreateSwapchainFFXAPI)(VkDevice, const VkSwapchainCreateInfoKHR *, const VkAllocationCallbacks *, VkSwapchainKHR *, void *);
-typedef void (*PFN_vkDestroySwapchainFFXAPI)(VkDevice, VkSwapchainKHR, const VkAllocationCallbacks *, void *);
-typedef uint64_t (*PFN_getLastPresentCountFFXAPI)(VkSwapchainKHR);
-struct ffxQueryDescSwapchainReplacementFunctionsVK {
-    ffxQueryDescHeader header;
-    PFN_vkCreateSwapchainFFXAPI pOutCreateSwapchainFFXAPI;
-    PFN_vkDestroySwapchainFFXAPI pOutDestroySwapchainFFXAPI;
-    PFN_vkGetSwapchainImagesKHR pOutGetSwapchainImagesKHR;
-    PFN_vkAcquireNextImageKHR pOutAcquireNextImageKHR;
-    PFN_vkQueuePresentKHR pOutQueuePresentKHR;
-    PFN_vkSetHdrMetadataEXT pOutSetHdrMetadataEXT;
-    PFN_getLastPresentCountFFXAPI pOutGetLastPresentCountFFXAPI;
-};
+#include "ffx_api/ffx_framegeneration_api_types.h"
+#include "ffx_api/vk/ffx_api_framegeneration_vk.h"
 
 static ffxContext fgsc_ctx, fg_ctx;
 static PFN_vkCreateSwapchainFFXAPI fg_create_fn;
@@ -71,8 +45,12 @@ static bool fg_context(uint32_t w, uint32_t h) {
     if (fg_ctx && fg_w == w && fg_h == h) return true;
     if (fg_ctx) { vkDeviceWaitIdle(g_vk.dev); ffx_destroy(&fg_ctx, NULL); fg_ctx = NULL; }
     struct ffxCreateBackendVKDesc be = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK},
-                                        .vkDevice = g_vk.dev, .vkPhysicalDevice = g_vk.phys, .vkDeviceProcAddr = ffx_proc};
-    struct ffxCreateContextDescFrameGeneration cd = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION, .pNext = &be.header},
+                                        .deviceContext = {g_vk.dev, g_vk.phys, ffx_proc}};
+    // [XCDE] SDK 2.1+: required API version descriptor for the split (2.x) frame-generation DLL.
+    struct ffxCreateContextDescFrameGenerationVersion ver = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION_VERSION,
+                                                                       .pNext = &be.header},
+                                                             .version = FFX_FRAMEGENERATION_VERSION};
+    struct ffxCreateContextDescFrameGeneration cd = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION, .pNext = &ver.header},
                                                      .flags = FFX_FRAMEGENERATION_ENABLE_DEPTH_INFINITE, .displaySize = {w, h},
                                                      .maxRenderSize = {w, h}, .backBufferFormat = FFX_API_SURFACE_FORMAT_B8G8R8A8_UNORM};
     ffxReturnCode_t r = ffx_create(&fg_ctx, &cd.header, NULL);
@@ -112,8 +90,12 @@ bool tmp_fg_install(VkSwapchainKHR *sc, const VkSwapchainCreateInfoKHR *ci, PFN_
     // gets them too (its device functions through this backend's proc address), else Streamline never sees the
     // swapchain or its presents and DLSS waited forever on its first frame
     struct ffxCreateBackendVKDesc be = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK},
-                                        .vkDevice = g_vk.dev, .vkPhysicalDevice = g_vk.phys, .vkDeviceProcAddr = fgsc_proc};
-    d.header.pNext = &be.header;
+                                        .deviceContext = {g_vk.dev, g_vk.phys, fgsc_proc}};
+    // [XCDE] SDK 2.1+: the swapchain also requires its version descriptor; it is destroyed before the backend.
+    struct ffxCreateContextDescFrameGenerationSwapChainVersionVK ver = {
+        .header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_VERSION_VK, .pNext = &be.header},
+        .version = FFX_FRAMEGENERATION_SWAPCHAIN_VK_VERSION};
+    d.header.pNext = &ver.header;
     ffxReturnCode_t r = ffx_create(&fgsc_ctx, &d.header, NULL);
     if (r != FFX_API_RETURN_OK) { LOG("[tmp] frame generation swapchain failed: %u\n", r); fgsc_ctx = NULL; return false; }
     struct ffxQueryDescSwapchainReplacementFunctionsVK q;

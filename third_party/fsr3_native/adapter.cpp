@@ -12,7 +12,15 @@
 #else
 #define EXPORT extern "C" __attribute__((visibility("default")))
 #endif
-struct BackendDesc {
+// [XCDE] FidelityFX SDK 2.x renamed the Vulkan backend descriptor; keep the 1.1.4 one for
+// the host API this adapter is built against (the layouts are identical).
+#define FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK_240 FFX_API_MAKE_BACKEND_SUB_ID(FFX_API_BACKEND_ID_VK, 0x03)
+#define FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK_114 0x0000003u
+struct BackendDesc240 {
+    ffxCreateContextDescHeader header;
+    VkDeviceContext deviceContext;
+};
+struct BackendDesc114 {
     ffxCreateContextDescHeader header;
     VkDevice device;
     VkPhysicalDevice physical;
@@ -42,17 +50,27 @@ EXPORT ffxReturnCode_t ffxCreateContext(ffxContext *out, ffxCreateContextDescHea
     if (header->type != FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE) return FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE;
     auto *d=reinterpret_cast<ffxCreateContextDescUpscale*>(header);
     auto *be=header->pNext;
-    while (be && be->type != 3) be=be->pNext;
+    while (be && be->type != FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK_240 &&
+           be->type != FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK_114) be=be->pNext;
     if (!be) return FFX_API_RETURN_ERROR_PARAMETER;
-    auto *vk=reinterpret_cast<BackendDesc*>(be);
+    VkDevice device;
+    VkPhysicalDevice physical;
+    PFN_vkGetDeviceProcAddr proc;
+    if (be->type == FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK_240) {
+        auto *vk=reinterpret_cast<BackendDesc240*>(be);
+        device=vk->deviceContext.vkDevice; physical=vk->deviceContext.vkPhysicalDevice; proc=vk->deviceContext.vkDeviceProcAddr;
+    } else {
+        auto *vk=reinterpret_cast<BackendDesc114*>(be);
+        device=vk->device; physical=vk->physical; proc=vk->proc;
+    }
     // Shader set is intentionally restricted to Monado's input conventions.
     if (d->flags & (FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_DISPLAY_RESOLUTION_MOTION_VECTORS |
         FFX_UPSCALE_ENABLE_MOTION_VECTORS_JITTER_CANCELLATION | FFX_UPSCALE_ENABLE_DEPTH_INVERTED))
         return FFX_API_RETURN_ERROR_PARAMETER;
     auto *c=new(std::nothrow) Context;
     if (!c) return FFX_API_RETURN_ERROR_MEMORY;
-    c->device={vk->device,vk->physical,vk->proc};
-    size_t size=ffxGetScratchMemorySizeVK(vk->physical,1);
+    c->device={device,physical,proc};
+    size_t size=ffxGetScratchMemorySizeVK(physical,1);
     void *scratch=std::calloc(1,size);
     if (!scratch) { delete c; return FFX_API_RETURN_ERROR_MEMORY; }
     FfxErrorCode err=ffxGetInterfaceVK(&c->backend,ffxGetDeviceVK(&c->device),scratch,size,1);

@@ -296,7 +296,7 @@ The new headers compile as C11/C17 and C++17/C++20.
 
 ### 5.4 Effort and risk
 
-- Code changes are small (the prototype is ~600 added lines, mostly vendored
+- Code changes are small (the prototype is ~800 added lines, mostly vendored
   headers). The real effort is Windows validation: DLL deployment, VC++ runtime,
   version selection, FG behavior, and driver-specific testing.
 - Risk is moderate: the API is additive but the DLL split and version

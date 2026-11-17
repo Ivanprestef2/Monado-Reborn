@@ -179,8 +179,14 @@ int main(int argc, char **argv) {
   // FFX_BACKEND_TYPE: 3 for FSR 3.1.4-era libraries, 0x01000003 for AMD's FidelityFX SDK 2.4 loader.
   uint64_t backend_type = getenv("FFX_BACKEND_TYPE") ? strtoull(getenv("FFX_BACKEND_TYPE"), nullptr, 0) : 3;
   Backend be{{backend_type, nullptr}, dev, phys, proc};
+  // SDK 2.1+ (2.4.0 loader): the API version descriptor is required before the backend.
+  ffxCreateContextDescUpscaleVersion version{};
+  if (backend_type != 3) {
+    version.header = {FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION, &be.header};
+    version.version = FFX_UPSCALER_VERSION;
+  }
   ffxCreateContextDescUpscale create{};
-  create.header = {FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE, &be.header};
+  create.header = {FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE, backend_type == 3 ? &be.header : &version.header};
   create.maxRenderSize = {128, 128};
   create.maxUpscaleSize = {128, 128};
   create.flags =

@@ -1,6 +1,7 @@
 // [XCDE] Temporal upscaling / anti-aliasing at the present (temporal.h). AMD FSR 3.1 through the FidelityFX API
-// (amd_fidelityfx_vk.dll next to the exe, FidelityFX SDK 1.1.4 - the last with Vulkan; loaded at run time, so the exe
-// runs without it). NVIDIA DLSS: dlss.cpp (Streamline).
+// (Windows: amd_fidelityfx_vk.dll from FidelityFX SDK 1.1.4; SDK 2.4.0 ships a loader plus split effect DLLs and is
+// the planned update. Linux: libmonado_fsr3.so, native 1.1.4. Loaded at run time, so the exe runs without it.)
+// NVIDIA DLSS: dlss.cpp (Streamline).
 //
 // Per frame: exec.c jitters the draws into the scene depth by a Halton (2, 3) sub-pixel offset and finds the game's
 // camera. Here one fullscreen pass at render size copies the game image (raw bytes: gamma-encoded LDR) and the scene
@@ -22,15 +23,9 @@
 #include "vkq.h"  // [XCDE] T-LINUX-THREE: drain before the SDKs record into the command buffer
 #include "fsr4.h"  // [XCDE] T-FSR4-LITE (Linux)
 #include "ffx_api/ffx_api.h"
+#include "ffx_api/ffx_api_types.h"
 #include "ffx_api/ffx_upscale.h"
-// (ffx_api/vk/ffx_api_vk.h is C++-only: its one structure used here, as declared there)
-#define FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK 0x0000003u
-struct ffxCreateBackendVKDesc {
-    ffxCreateContextDescHeader header;
-    VkDevice vkDevice;
-    VkPhysicalDevice vkPhysicalDevice;
-    PFN_vkGetDeviceProcAddr vkDeviceProcAddr;
-};
+#include "ffx_api/vk/ffx_api_vk.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -515,8 +510,12 @@ static bool fsr_context(uint32_t ow, uint32_t oh) {
     vkq_drain();
     if (fsr_ctx) { vkDeviceWaitIdle(g_vk.dev); ffx_destroy(&fsr_ctx, NULL); fsr_ctx = NULL; }
     struct ffxCreateBackendVKDesc be = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK},
-                                        .vkDevice = g_vk.dev, .vkPhysicalDevice = g_vk.phys, .vkDeviceProcAddr = ffx_proc};
-    struct ffxCreateContextDescUpscale cd = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE, .pNext = &be.header},
+                                        .deviceContext = {g_vk.dev, g_vk.phys, ffx_proc}};
+    // [XCDE] SDK 2.1+: the API version descriptor is required with the split (2.x) effect DLLs.
+    struct ffxCreateContextDescUpscaleVersion ver = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION,
+                                                               .pNext = &be.header},
+                                                     .version = FFX_UPSCALER_VERSION};
+    struct ffxCreateContextDescUpscale cd = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE, .pNext = &ver.header},
                                              .flags = FFX_UPSCALE_ENABLE_DEPTH_INFINITE | FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE |
                                                       FFX_UPSCALE_ENABLE_DYNAMIC_RESOLUTION,
                                              .maxRenderSize = {ow, oh}, .maxUpscaleSize = {ow, oh}, .fpMessage = fsr_message};
