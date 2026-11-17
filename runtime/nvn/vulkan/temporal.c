@@ -1,6 +1,7 @@
 // [XCDE] Temporal upscaling / anti-aliasing at the present (temporal.h). AMD FSR 3.1 through the FidelityFX API
 // (Windows: amd_fidelityfx_vk.dll from FidelityFX SDK 1.1.4; SDK 2.4.0 ships a loader plus split effect DLLs and is
-// the planned update. Linux: libmonado_fsr3.so, native 1.1.4. Loaded at run time, so the exe runs without it.)
+// the planned update. Linux: libmonado_fsr3.so, native 1.1.4 by default or native 3.1.6 with
+// scripts/build_fsr3_linux.sh --sdk-version 2.4.0. Loaded at run time, so the exe runs without it.)
 // NVIDIA DLSS: dlss.cpp (Streamline).
 //
 // Per frame: exec.c jitters the draws into the scene depth by a Halton (2, 3) sub-pixel offset and finds the game's
@@ -73,8 +74,9 @@ static bool ffx_load(void) {
     LOG("[tmp] FidelityFX API loaded (FSR 3.1)\n");
     return true;
 #else
-    // [XCDE] T-LINUX-FSR3: libmonado_fsr3.so (scripts/build_fsr3_linux.sh: AMD's FSR 3.1.4 upscaler and Vulkan backend
-    // from the official SDK 1.1.4, built natively) beside the executable or on the library path. Same API subset.
+    // [XCDE] T-LINUX-FSR3: libmonado_fsr3.so (scripts/build_fsr3_linux.sh: AMD's FSR 3.1.4 upscaler from SDK 1.1.4,
+    // or FSR 3.1.6 from the pinned SDK 2.4.0 signed DLL with --sdk-version 2.4.0, built natively) beside the
+    // executable or on the library path. Same API subset.
     VkPhysicalDeviceFeatures features;
     vkGetPhysicalDeviceFeatures(g_vk.phys, &features);
     VkPhysicalDeviceSubgroupProperties subgroup = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};

@@ -31,6 +31,7 @@ Every edit to a copied file is marked `[XCDE]` (the project's working name) and 
 | NVIDIA Streamline headers (DLSS) | MIT (`third_party/streamline/license.txt`) |
 | weeping-of-the-empire (daniel-madrid-07, fe2345e8) | MIT (`third_party/weeping-of-the-empire/LICENSE`); the Linux AMDGPU GTT / dma-buf guest heap is adapted in `runtime/platform/linux_gpu.h` and the Vulkan import in `runtime/nvn/vulkan/exec.c`; its visibility-scoped feedback copies are the design reference for `resolve_feedback` (no code copied); the ordered Vulkan recording queue is adapted in `runtime/nvn/vulkan/vkq.c` / `vkq.h` |
 | Optional native AMD FSR 3.1.4 upscaler and Vulkan backend, SDK 1.1.4 (`c6efa6bf7f2027b3ec94f28578bb5965eabb9e55`) | AMD SDK MIT terms (`third_party/fsr3_native/LICENSE-AMD.txt`); fetched at build time from GPUOpen-LibrariesAndSDKs/FidelityFX-SDK; Linux adapter/preparation described in `third_party/fsr3_native/README.md` |
+| Optional native AMD FSR 3.1.6 upscaler and Vulkan backend, SDK 2.4.0 (`7539ae8b6568ad29ed78a753404351daf3b5cca7`) | AMD SDK MIT terms (`Kits/FidelityFX/docs/license.md` in the pinned checkout, copied to `build/fsr3-240/LICENSE-AMD.md`); SPIR-V extracted from AMD's signed `amd_fidelityfx_upscaler_vk.dll` at build time; upscaling-only Linux prototype described in `third_party/fsr3_native/README.md` |
 | bcdec (BC texture decoding) | MIT or public domain (Unlicense), at the user's choice |
 
 ## Linked at build time (not in this repository)

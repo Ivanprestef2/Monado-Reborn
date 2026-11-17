@@ -48,7 +48,7 @@ cmake --build --preset linux
 ```
 
 - **Output:** `build/linux/monado` and `build/linux/monado-launcher`.
-- **Upscaler components:** the optional native FSR 3 / FSR 4 Lite components are built through their own scripts. Turn that off with `-DMONADO_NATIVE_FSR=OFF`.
+- **Upscaler components:** the optional native FSR 3 / FSR 4 Lite components are built through their own scripts. Turn that off with `-DMONADO_NATIVE_FSR=OFF`. `-DMONADO_FSR3_SDK=2.4.0` builds the experimental FSR 3.1.6 Linux component by extracting the pinned SDK 2.4.0 signed DLL's SPIR-V (default: `1.1.4`, FSR 3.1.4 GLSL).
 - **zig instead of clang:** `cmake --preset linux-zig` uses the same zig as Windows, from `.venv/bin/python -m pip install ziglang`.
 
 ### Runtime only

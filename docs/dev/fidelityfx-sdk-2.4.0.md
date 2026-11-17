@@ -3,7 +3,8 @@
 Status: research prototype, branch `research/ffx-sdk-2.4.0` (2026-11-17).
 Scope: AMD FidelityFX / FSR integrations in Monado. This document is the
 research report; the branch also contains the validated API-header prototype
-described in section 5.
+(section 5) and the validated Linux native FSR 3.1.6 extraction prototype
+(section 6.2).
 
 ## 1. Executive summary
 
@@ -21,14 +22,17 @@ described in section 5.
   not have, plus the new loader name. The prototype in this branch compiles with
   the 2.4.0 headers, keeps the Linux 1.1.4 native component working, and passes
   the native FSR 3 regression test.
-- **Linux native FSR 3 cannot simply be bumped to 2.4.0.** SDK 2.x no longer
-  ships GLSL shaders, generated shader-permutation headers, or a CMake build;
-  the effects are prebuilt Windows DLLs. Our native `libmonado_fsr3.so` would
-  need a new shader/extraction pipeline and a port of the 2.x host/backend
-  interface. A feasibility path exists (the 2.4.0 Vulkan upscaler DLL contains
-  1,778 compressed SPIR-V modules, 294 of them in the FSR 3 family), but it is a
-  project, not a version bump. Recommendation: **keep the Linux native FSR 3
-  component on 1.1.4 for now**, and keep FSR 4 Lite as the Linux ML path.
+- **Linux native FSR 3 cannot simply be bumped to 2.4.0, but a working
+  extraction prototype now exists.** SDK 2.x no longer ships GLSL shaders,
+  generated shader-permutation headers, or a CMake build; the effects are
+  prebuilt Windows DLLs. The branch now contains a Linux-only opt-in path:
+  `tools/extract_fsr3_240_blobs.py` reads the 2.4.0 Vulkan upscaler DLL's own
+  `FfxShaderBlobInfo` arrays and permutation tables, decompresses the selected
+  wave32/FP32 SPIR-V, and the 2.4.0 host/backend compile against
+  `adapter_240.cpp`. It reports FSR 3.1.6 and passes the native regression with
+  both backend descriptor forms. Recommendation: **keep 1.1.4 as the default
+  Linux component** until the 3.1.6 path has gameplay/quality validation, and
+  keep FSR 4 Lite as the Linux ML path.
 - **FSR 4 preparation is already pinned to 2.4.0** (`tools/prepare_fsr4_lite.py`,
   `tools/fsr4_prepare.py`, ADR 0012). Only the `third_party/fsr4cap/ffx` headers
   are still from 2.3.0; the differences that matter are small and are listed in
@@ -362,9 +366,64 @@ subtle descriptor/layout differences. Unless 3.1.6's accumulate/reprojection
 improvement is important for this game, the cost/benefit does not justify
 replacing the working 1.1.4 native component now.
 
-**Recommendation:** keep Linux native FSR 3.1.4 on SDK 1.1.4; keep the shared
-`third_party/ffx_api` headers at 2.4.0 (the adapter accepts both descriptor
-forms), and revisit a native 3.1.6 port only if quality work needs it.
+**Recommendation:** keep Linux native FSR 3.1.4 on SDK 1.1.4 as the default;
+keep the shared `third_party/ffx_api` headers at 2.4.0 (the adapter accepts both
+descriptor forms), and treat the new 3.1.6 path as an opt-in until gameplay
+validation is complete.
+
+### 6.2 Linux native 3.1.6 prototype (validated)
+
+The feasibility path from 6.1 is implemented in this branch and works on Linux:
+
+| Area | File | What it does |
+|---|---|---|
+| Extraction | `tools/extract_fsr3_240_blobs.py` | parses the pinned `amd_fidelityfx_upscaler_vk.dll` (minimal PE parser, no `pefile` dependency), reads the `FfxShaderBlobInfo` arrays and their 64-entry indirection tables, inflates the selected `FXZF`/zlib SPIR-V and emits `blobs.cpp` |
+| Host | SDK 2.4.0 `ffx_fsr3upscaler.cpp` | compiled directly; only the provider/`ffx_backends.h` include and the `GetResourceSizeFromDescription` declaration are adjusted |
+| Backend | SDK 2.4.0 `ffx_vk.cpp` | compiled directly; the miniz decompression hook is bypassed because the generated blobs are already raw SPIR-V |
+| Adapter | `third_party/fsr3_native/adapter_240.cpp` | implements the 1.1.4-compatible `ffxCreateContext`/`ffxDispatch` ABI on the 2.4.0 host and accepts both backend descriptor forms |
+| Build | `tools/build_fsr3_linux.py --sdk-version 2.4.0`, CMake `-DMONADO_FSR3_SDK=2.4.0` | sparse-checks out the pinned tag, verifies the DLL SHA-256, builds the component |
+
+Binary details that matter:
+
+- `FfxShaderBlobInfo` starts with the **compressed total size**, then the
+  `blobData` pointer, `entryName`, the seven counts and the per-group
+  name/binding/count/space arrays. `blobSize` is not the decompressed size.
+- The FSR 3 base arrays selected for the Linux port are the wave32/FP32 sets
+  (`prepare_inputs` 8 entries + table, `accumulate` 24 entries + table; one
+  entry for the other passes). The FP16 bit is masked out and the Vulkan
+  backend reports shader model 5.1, so wave64 is never requested.
+- The `accumulate` table maps the 6-bit key as expected: bit 0 = LUT, bit 2 =
+  low-resolution motion vectors, bit 5 = accumulate-sharpen; bit 4 is ignored.
+  The keys used by the game are 5 (accumulate) and 37 (accumulate-sharpen) on
+  RDNA wave32/FP32.
+- The selected `prepare_inputs` and `accumulate` shaders are the base arrays;
+  the other FSR 3 passes are identical across the base/wave64 duplicates in
+  this DLL.
+- The adapter's context is enlarged to `4 * FFX_SDK_DEFAULT_CONTEXT_SIZE` for
+  Linux's 32-bit `wchar_t` (the private context is 837,824 bytes).
+
+Verification:
+
+```bash
+# build with the pinned SDK/DLL and run the native regression
+scripts/build_fsr3_linux.sh --sdk-version 2.4.0
+clang++ -std=c++17 -Ithird_party tests/native/test_fsr3_temporal.cpp \
+  -Lbuild/linux -Wl,-rpath,"$PWD/build/linux" -lmonado_fsr3 -lvulkan \
+  -o build/fsr3/test-temporal
+build/fsr3/test-temporal
+FFX_BACKEND_TYPE=0x01000003 build/fsr3/test-temporal
+```
+
+Both runs print `native FSR3 synthetic dispatch OK` with the same
+RMS/amplitude values as the 1.1.4 component (frame 0 `0.0472/0.3332`, frame 7
+`0.0164/0.3769`, frame 31 `0.0182/0.4251`). `FSR3_SHARPEN=1` additionally
+exercises the accumulate-sharpen and RCAS pipelines; the values also match
+1.1.4 exactly (`0.0314/0.3555`, `0.0026/0.3977`, `0.0308/0.4431`). CMake builds
+the same target with `-DMONADO_FSR3_SDK=2.4.0`; the default stays `1.1.4`.
+
+Not covered yet: real-game image quality/performance of 3.1.6 versus 3.1.4,
+the FP16 and wave64 permutation sets, frame generation, and the Windows
+loader/effect-DLL split (section 5).
 
 ## 7. FSR 4 Lite and fsr4cap
 
@@ -415,26 +474,41 @@ forms), and revisit a native 3.1.6 port only if quality work needs it.
    `HUDLessColor`, camera cut reset and frame pacing.
 4. Add tests for version selection, descriptor chains and FG call order.
 
-### Phase 3 - Linux native FSR 3.1.6 (optional, research spike)
+### Phase 3 - Linux native FSR 3.1.6 (prototype done)
 
-Only if the quality gain is worth it: implement the extraction + host/backend
-port from section 6.1 behind `--sdk 2.4.0`, keep 1.1.4 as the fallback, and
-validate against the native regression test and the game.
+The extraction + host/backend port from section 6.1 is implemented behind
+`--sdk-version 2.4.0` / `-DMONADO_FSR3_SDK=2.4.0` and passes the native
+regression. Remaining work before changing the default:
+
+1. A/B the real game against 3.1.4 (quality, ghosting, stationary detail,
+   performance) on RDNA 2/3 and at least one non-AMD Vulkan device.
+2. Validate the prepare-inputs base permutation choice and, if needed, ship the
+   FP16/wave64 sets (the backend does not request wave64 today).
+3. Run the full Linux runtime/launcher smoke test with the 2.4.0 component and
+   decide whether to keep 1.1.4 as the fallback package or ship both.
 
 ## 9. Verification performed in this branch
 
 - Updated headers compile as C11/C17 (`clang -std=gnu17 -fsyntax-only`) and
   C++17/C++20.
 - `scripts/build_linux.sh --runtime-only` builds with the 2.4.0 headers and the
-  dual-descriptor adapter.
+  dual-descriptor adapter; the same build with `XCDE_FSR3_SDK=2.4.0` builds the
+  FSR 3.1.6 component.
+- CMake: `cmake --preset linux -DMONADO_RUNTIME_ONLY=ON -DMONADO_FSR3_SDK=2.4.0`
+  then `cmake --build --preset linux --target native_fsr` builds
+  `build/linux/libmonado_fsr3.so` from the pinned signed DLL.
 - Native FSR 3 regression:
   `clang++ -std=c++17 -Ithird_party tests/native/test_fsr3_temporal.cpp -Lbuild/linux -Wl,-rpath,$PWD/build/linux -lmonado_fsr3 -lvulkan -o build/fsr3/test-temporal`
   then `build/fsr3/test-temporal`:
   `native FSR3 synthetic dispatch OK` (same RMS/amplitude as before). The same
   test with `FFX_BACKEND_TYPE=0x01000003` exercises the new backend descriptor
   and the API version descriptor against our adapter and also passes.
+  The 2.4.0/3.1.6 component (`scripts/build_fsr3_linux.sh --sdk-version 2.4.0`)
+  passes both backend forms with the same frame 0/7/31 values. `FSR3_SHARPEN=1`
+  (accumulate-sharpen + RCAS) also matches 1.1.4 exactly.
 - Not verified: any Windows 2.4.0 DLL path, FSR 4 full, ML FG, driver-provided
-  versions, actual game image quality/performance.
+  versions, actual game image quality/performance of 3.1.6, FP16/wave64
+  permutations.
 
 ## 10. Open questions
 
@@ -446,8 +520,9 @@ validate against the native regression test and the game.
    and does the game's near/far convention match the ML provider's expectations?
 4. Which Windows test hardware is available for RX 6000 / RX 9000 / NVIDIA
    fallback, and can we run the native test under Wine with the 2.4.0 loader?
-5. Should the Linux native 3.1.6 port be scheduled at all, or is FSR 4 Lite
-   sufficient for the Linux ML story?
+5. Does 3.1.6's quality/performance justify making it the default Linux
+   component? The prototype answers feasibility; gameplay A/B, the FP16/wave64
+   sets and the prepare-inputs permutation choice still need validation.
 
 ## Appendix A - Useful commands
 

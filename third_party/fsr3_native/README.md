@@ -1,10 +1,12 @@
-# Native Linux FSR 3.1.4
+# Native Linux FSR 3.1 (1.1.4 default, 2.4.0 prototype)
 
 `adapter.cpp` implements the small FidelityFX API subset used by Monado's
-`temporal.c`, using AMD's FSR 3.1.4 upscaler and Vulkan backend. It does not
-implement frame generation, swapchain replacement or a general FidelityFX API.
-The adapter is covered by the repository MIT licence. AMD SDK source, shaders
-and the resulting component are subject to the preserved `LICENSE-AMD.txt`.
+`temporal.c`, using AMD's FSR 3.1.4 upscaler and Vulkan backend. The optional
+`adapter_240.cpp` provides the same entry points on the SDK 2.4.0 FSR 3.1.6
+host/backend. Neither implements frame generation, swapchain replacement or a
+general FidelityFX API. The adapters are covered by the repository MIT licence.
+AMD SDK source, shaders and the resulting component are subject to the preserved
+`LICENSE-AMD.txt` (1.1.4) or `LICENSE-AMD.md` (2.4.0).
 
 Build from the repository root:
 
@@ -12,6 +14,9 @@ Build from the repository root:
 scripts/build_fsr3_linux.sh
 # Or supply an existing official SDK 1.1.4 checkout:
 scripts/build_fsr3_linux.sh --sdk /absolute/path/to/sdk-checkout
+# Experimental FSR 3.1.6 from SDK 2.4.0 (Linux only):
+scripts/build_fsr3_linux.sh --sdk-version 2.4.0
+# CMake: -DMONADO_FSR3_SDK=2.4.0 instead of the default 1.1.4
 ```
 
 Requires Python 3, Git, Clang++, Vulkan development headers/library and
@@ -33,6 +38,28 @@ standard headers, enlarges the opaque FSR context for 32-bit `wchar_t`, and alig
 the SDK's `alignas(32)` effect-context scratch array with sufficient padding.
 These changes are generated without altering the pinned checkout. The unused
 frame-generation configuration callback returns an unsupported error.
+
+## Experimental SDK 2.4.0 path (FSR 3.1.6)
+
+SDK 2.x no longer ships GLSL shaders, generated permutation headers or an effect
+build system; the supported Vulkan artifacts are AMD's signed DLLs. The
+`--sdk-version 2.4.0` path therefore:
+
+- sparse-checks out the pinned `v2.4.0` tag
+  (`7539ae8b6568ad29ed78a753404351daf3b5cca7`);
+- verifies AMD's `amd_fidelityfx_upscaler_vk.dll`
+  (`4a7e895af6e0b615d40a84d59eb8c2b1054ad91cdd0c739567940270d51bdab7`);
+- runs `tools/extract_fsr3_240_blobs.py`, which reads the DLL's own
+  `FfxShaderBlobInfo` arrays and 64-entry permutation tables, decompresses the
+  selected wave32/FP32 SPIR-V modules and writes a self-contained `blobs.cpp`;
+- compiles the 2.4.0 FSR 3 host, Vulkan backend and `adapter_240.cpp`.
+
+The resulting `build/linux/libmonado_fsr3.so` reports `FSR 3.1.6 native Vulkan
+(FP32)` and passes `tests/native/test_fsr3_temporal.cpp` with both the 1.1.4
+(`FFX_BACKEND_TYPE=3`) and 2.4.0 (`0x01000003`) backend descriptor forms. It is
+upscaling-only: frame generation, the loader/effect DLL split, full FSR 4.1.2
+and ML frame generation are not part of this component. The default build stays
+on 1.1.4 until the 3.1.6 path has gameplay validation.
 
 The runtime requires extended storage-image formats, formatless storage-image
 writes and compute subgroup quad operations. It reuses the existing depth,
