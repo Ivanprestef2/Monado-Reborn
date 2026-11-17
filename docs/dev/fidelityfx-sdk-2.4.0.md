@@ -239,16 +239,22 @@ The new headers compile as C11/C17 and C++17/C++20.
 
 - includes the real `ffx_api/vk/ffx_api_vk.h` instead of a hand-declared backend
   struct;
-- builds the 2.4.0 chain
-  `ffxCreateContextDescUpscale -> ffxCreateContextDescUpscaleVersion -> ffxCreateBackendVKDesc`.
+- deliberately keeps the 1.1.4 chain
+  `ffxCreateContextDescUpscale -> ffxCreateBackendVKDesc_DEPRECATED` while
+  `ffx_load()` still loads `amd_fidelityfx_vk.dll`. SDK 2.x renamed the Vulkan
+  backend descriptor from `0x0000003` to `0x01000003`; the 1.1.4 DLL only
+  recognises the old value, so passing the new type makes `ffxCreateContext`
+  fail with `FFX_API_RETURN_ERROR`. The 2.4.0 chain
+  (`...UpscaleVersion -> ffxCreateBackendVKDesc`) is built when the loader
+  switch lands (section 5.3) and is exercised today by the native test with
+  `FFX_BACKEND_TYPE=0x01000003`.
 
 `runtime/nvn/vulkan/temporal_fg.inc`:
 
 - uses the official frame-generation and swapchain headers instead of local
   copies of the 1.1.4 structs;
-- chains `ffxCreateContextDescFrameGenerationVersion` and
-  `ffxCreateContextDescFrameGenerationSwapChainVersionVK`;
-- uses the new `deviceContext` backend descriptor;
+- likewise keeps the deprecated backend descriptor and no version structures
+  until the loader switch;
 - keeps the deprecated `ffxDispatchDescFrameGenerationPrepare` for the first
   step; `PrepareV2` + camera vectors is the follow-up for ML FG (section 8).
 
@@ -265,7 +271,8 @@ The new headers compile as C11/C17 and C++17/C++20.
    `amd_fidelityfx_loader_vk.dll` on Windows. Either require 2.4.0 and drop the
    old file, or add a two-mode path (loader -> new descriptors; old DLL ->
    deprecated backend descriptor and no version structs). The latter is more
-   user-friendly but more code and needs Windows testing.
+   user-friendly but more code and needs Windows testing; the 1.1.4 path
+   must keep the legacy `0x0000003` backend descriptor.
 2. **Version policy.** Add `ffxQueryDescGetVersions` and either leave selection
    automatic (FSR 4 on supported AMD GPUs) or pin FSR 3.1.6 via
    `ffxOverrideVersion`. Decide whether full FSR 4.1.2 becomes a new
@@ -572,9 +579,9 @@ BASE=https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/7
 | Area | File | Change |
 |---|---|---|
 | API headers | `third_party/ffx_api/*` | 2.4.0 + Linux/C patches |
-| Upscale context | `runtime/nvn/vulkan/temporal.c:508-535` | new backend + version descriptor |
+| Upscale context | `runtime/nvn/vulkan/temporal.c:508-535` | legacy backend descriptor until the loader switch (2.4.0 chain in the native test) |
 | Upscale loader | `runtime/nvn/vulkan/temporal.c:46-83` | loader DLL / fallback |
-| FG context/swapchain | `runtime/nvn/vulkan/temporal_fg.inc:46-120` | backend + version descriptors |
+| FG context/swapchain | `runtime/nvn/vulkan/temporal_fg.inc:46-120` | legacy backend descriptor; version descriptors with the loader switch |
 | FG per-frame | `runtime/nvn/vulkan/temporal_fg.inc:140-185` | pin/prepare path |
 | Native adapter | `third_party/fsr3_native/adapter.cpp` | accept both backend descriptors |
 | DLL copy | `scripts/copy_upscaler_dlls.sh`, `cmake/copy_upscaler_dlls.cmake` | three new DLLs |

@@ -44,13 +44,13 @@ static void VKAPI_PTR fg_destroy_sc(VkDevice d, VkSwapchainKHR sc, const VkAlloc
 static bool fg_context(uint32_t w, uint32_t h) {
     if (fg_ctx && fg_w == w && fg_h == h) return true;
     if (fg_ctx) { vkDeviceWaitIdle(g_vk.dev); ffx_destroy(&fg_ctx, NULL); fg_ctx = NULL; }
-    struct ffxCreateBackendVKDesc be = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK},
-                                        .deviceContext = {g_vk.dev, g_vk.phys, ffx_proc}};
-    // [XCDE] SDK 2.1+: required API version descriptor for the split (2.x) frame-generation DLL.
-    struct ffxCreateContextDescFrameGenerationVersion ver = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION_VERSION,
-                                                                       .pNext = &be.header},
-                                                             .version = FFX_FRAMEGENERATION_VERSION};
-    struct ffxCreateContextDescFrameGeneration cd = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION, .pNext = &ver.header},
+    // [XCDE] The runtime still loads the SDK 1.1.4 DLL, so it gets the
+    // legacy backend descriptor type (0x0000003); SDK 2.x renamed it.
+    struct ffxCreateBackendVKDesc_DEPRECATED be = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK_DEPRECATED},
+                                                   .vkDevice = g_vk.dev,
+                                                   .vkPhysicalDevice = g_vk.phys,
+                                                   .vkDeviceProcAddr = ffx_proc};
+    struct ffxCreateContextDescFrameGeneration cd = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION, .pNext = &be.header},
                                                      .flags = FFX_FRAMEGENERATION_ENABLE_DEPTH_INFINITE, .displaySize = {w, h},
                                                      .maxRenderSize = {w, h}, .backBufferFormat = FFX_API_SURFACE_FORMAT_B8G8R8A8_UNORM};
     ffxReturnCode_t r = ffx_create(&fg_ctx, &cd.header, NULL);
@@ -89,13 +89,11 @@ bool tmp_fg_install(VkSwapchainKHR *sc, const VkSwapchainCreateInfoKHR *ci, PFN_
     // [XCDE] with DLSS loaded the swapchain calls go through Streamline's proxies (device.c sc_proxies): AMD's swapchain
     // gets them too (its device functions through this backend's proc address), else Streamline never sees the
     // swapchain or its presents and DLSS waited forever on its first frame
-    struct ffxCreateBackendVKDesc be = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK},
-                                        .deviceContext = {g_vk.dev, g_vk.phys, fgsc_proc}};
-    // [XCDE] SDK 2.1+: the swapchain also requires its version descriptor; it is destroyed before the backend.
-    struct ffxCreateContextDescFrameGenerationSwapChainVersionVK ver = {
-        .header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_VERSION_VK, .pNext = &be.header},
-        .version = FFX_FRAMEGENERATION_SWAPCHAIN_VK_VERSION};
-    d.header.pNext = &ver.header;
+    struct ffxCreateBackendVKDesc_DEPRECATED be = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK_DEPRECATED},
+                                                   .vkDevice = g_vk.dev,
+                                                   .vkPhysicalDevice = g_vk.phys,
+                                                   .vkDeviceProcAddr = fgsc_proc};
+    d.header.pNext = &be.header;
     ffxReturnCode_t r = ffx_create(&fgsc_ctx, &d.header, NULL);
     if (r != FFX_API_RETURN_OK) { LOG("[tmp] frame generation swapchain failed: %u\n", r); fgsc_ctx = NULL; return false; }
     struct ffxQueryDescSwapchainReplacementFunctionsVK q;

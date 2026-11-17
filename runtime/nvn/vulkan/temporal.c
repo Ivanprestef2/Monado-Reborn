@@ -511,13 +511,14 @@ static bool fsr_context(uint32_t ow, uint32_t oh) {
     if (fsr_ctx && fsr_w == ow && fsr_h == oh) return true;
     vkq_drain();
     if (fsr_ctx) { vkDeviceWaitIdle(g_vk.dev); ffx_destroy(&fsr_ctx, NULL); fsr_ctx = NULL; }
-    struct ffxCreateBackendVKDesc be = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK},
-                                        .deviceContext = {g_vk.dev, g_vk.phys, ffx_proc}};
-    // [XCDE] SDK 2.1+: the API version descriptor is required with the split (2.x) effect DLLs.
-    struct ffxCreateContextDescUpscaleVersion ver = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION,
-                                                               .pNext = &be.header},
-                                                     .version = FFX_UPSCALER_VERSION};
-    struct ffxCreateContextDescUpscale cd = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE, .pNext = &ver.header},
+    // [XCDE] 1.1.4 uses the legacy backend descriptor type. SDK 2.x renamed it
+    // (0x01000003), and the 1.1.4 DLL only recognises 0x0000003, so the runtime
+    // keeps the legacy form until it loads the 2.4.0 loader itself.
+    struct ffxCreateBackendVKDesc_DEPRECATED be = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK_DEPRECATED},
+                                                   .vkDevice = g_vk.dev,
+                                                   .vkPhysicalDevice = g_vk.phys,
+                                                   .vkDeviceProcAddr = ffx_proc};
+    struct ffxCreateContextDescUpscale cd = {.header = {.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE, .pNext = &be.header},
                                              .flags = FFX_UPSCALE_ENABLE_DEPTH_INFINITE | FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE |
                                                       FFX_UPSCALE_ENABLE_DYNAMIC_RESOLUTION,
                                              .maxRenderSize = {ow, oh}, .maxUpscaleSize = {ow, oh}, .fpMessage = fsr_message};
