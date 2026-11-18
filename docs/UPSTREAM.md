@@ -50,6 +50,9 @@ Justificación en ADR 0011. Se conserva la atribución y no se incorpora código
   `XCDE_REFLEX=0/1/2` lo fuerza.
 - `tools/install_dlss.py`, `cmake/copy_upscaler_dlls.cmake`, `scripts/copy_upscaler_dlls.sh`, `NOTICE.md`:
   `sl.reflex.dll`, `sl.pcl.dll` y `NvLowLatencyVk.dll` se despliegan con el resto del runtime NVIDIA.
+- `runtime/hle/party.c`: guarda en `field_group` para no llamar al huésped `f_7000593120` mientras el objeto de
+  campo no tiene enlazado `+0x680`; el stall de arranque con Streamline hacía que el escáner lo encontrara antes y
+  la lectura de `+0xda8` chocaba (crash del 2026-11-18 20:00 con `reflex = on` y `run_speed = 2.00`).
 - Pruebas: `tests/native/test_settings_roundtrip.c` (clave `reflex`), `tests/unit/test_reflex_contracts.py` (fuente) y
   `tests/unit/test_install_dlss.py` (DLLs). Investigación y límites: `docs/reflex_research.md` y
   `docs/evidence/reflex_2026-11-18*.md`.

@@ -1570,3 +1570,7 @@ Detalle: `docs/PERFORMANCE_UI.md`. Evidencia: `docs/evidence/performance_ui_2026
   DLLs firmadas (GTX 1050 Ti, driver 582.78). Evidencia: `docs/evidence/reflex_impl_2026-11-18.md`. Pendiente para
   cerrar: medición con la HUD de verificación/FrameView, gameplay (los runs fueron solo pantalla de título) y la
   anomalía de arranque con Streamline cargado (vigilada en la evidencia; no es el sleep ni el proxy).
+  **Cierre 20:00:** el primer arranque real con `reflex = on` chocó en `f_7000593120+0xb0` (lectura `0xda8`) desde
+  `run_speed_leader`/`field_group`; era la carrera del objeto de campo a medio enlazar, agrandada por el stall de
+  arranque de Streamline. Guard en `runtime/hle/party.c` (`+0x680` antes de la llamada al huésped), reconstruido y
+  runs con los mismos ajustes sin crash. Sigue pendiente la medición de latencia.

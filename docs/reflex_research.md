@@ -240,6 +240,14 @@ reflex_marker(t, ePresentEnd);
    precompile step can warm it, so the cost in normal play must be measured before deciding whether Reflex can be
    default-on. If it remains, options are to defer Streamline loading until the device/swapchain actually needs it
    (hard with manual hooking) or to scan a feature-specific plugin directory.
+   A real launcher run with `reflex = on` (1920x1080, V-Sync, `upscaler = fsr3`, `run_speed = 2.00`) crashed at
+   frame 8 during this stall, in the run-speed path: `fill_state` -> `party_game_tick` -> `run_speed_leader` ->
+   `field_group` -> guest `f_7000593120`, which reads `(*(pm)+0x680)+0xda8` without a null check. While the field
+   object is still being constructed `+0x680` is 0, so the guest read faults (`c0000005`, read of `0xda8`); the
+   longer Streamline startup widens that window. This is a pre-existing race in the run-speed lookup, not a
+   Streamline/Reflex API error. It is fixed by a guard in `field_group` that defers the lookup until the link
+   exists (`runtime/hle/party.c`); repeat runs with the same config pass, and the guard is exactly the read that
+   faulted. See `docs/evidence/reflex_impl_2026-11-18.md`.
 6. **Non-NVIDIA and hybrid.** `VK_NV_low_latency` does not exist on AMD/Intel; the option must be hidden or
    disabled and no extension may be added. On the Optimus/switchable-graphics path the selected adapter decides.
    `slIsFeatureSupported` remains the final check, not the vendor name.
@@ -306,6 +314,11 @@ Validation state (2026-11-18):
   stop at the title screen), and DLSS + Reflex together (no RTX on this PC). Until then the feature stays `off` by
   default and this document does not claim a latency gain. `XCDE_REFLEX_NOSLEEP=1` and `XCDE_REFLEX=0/1/2` are the
   A/B switches used above; the first is diagnostic only.
+- **Startup crash (fixed):** the first real launcher run with `reflex = on` crashed at frame 8 in the run-speed path
+  (`f_7000593120+0xb0`, read of `0xda8`) because the longer Streamline startup let the party scanner find the field
+  object before its `+0x680` link existed. `field_group` (`runtime/hle/party.c`) now defers the guest call until the
+  link is present; the same launcher/hidden configs run without the crash. This is a pre-existing timing race in the
+  run-speed feature, exposed by the startup stall, not a Reflex API failure.
 
 To try it on an NVIDIA machine: set `reflex = on` in `xcde.ini` (launcher or F1) and start the game; the log shows
 `[reflex] Reflex disponible ...` when the feature came up, `[reflex] frame loop active` once the limiter drives it,

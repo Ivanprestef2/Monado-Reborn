@@ -59,7 +59,29 @@ construir ~290 programas. En un cierre normal el juego guarda la caché, y el pa
 puede dejar el arranque caliente; hay que medirlo en un arranque normal antes de plantear `reflex = on` por defecto.
 No se declara la ganancia de latencia: falta la HUD de verificación de Reflex / FrameView.
 
-## Límites
+## Cierre (20:00): crash de arranque con Reflex y arreglo
+
+El primer arranque real desde el launcher con `reflex = on` (`upscaler = fsr3`, `run_speed = 2.00`,
+`party_switch = 0`, V-Sync, ventana visible) **chocó** al frame 8:
+
+- `crash/crash_20261118_200033.txt`: `c0000005` en `f_7000593120+0xb0`, **lectura de 0xda8**, último frame
+  presentado 8; antes hubo los mismos stalls de arranque (informe en `crash/stall_1.txt`).
+- Pila: `fill_state` → `party_game_tick` → `run_speed_leader` → `field_group` → `guest_call` →
+  `f_7000593120+b0`. Desensamblado del huésped: `x20 = *(obj + 0x680)` y después `LD64(x20 + 0xda8)` sin
+  comprobar `x20`; con el objeto de campo recién encontrado y `+0x680` todavía a 0, la lectura cae en `0xda8`.
+- Es una **carrera preexistente del run-speed**: el escáner de party encuentra el objeto de campo durante la
+  carga, antes de que el juego enlace `+0x680`; el stall de arranque de Streamline (arriba) alarga la ventana.
+  No es una llamada de la API de Reflex ni del proxy.
+- Arreglo en `runtime/hle/party.c` (`field_group`): se leen `*pm` y `+0x680` y se difiere la llamada al huésped
+  hasta que el enlace existe (`[party] field manager not linked yet: run-speed lookup deferred`, máx. 3 avisos).
+  Cuando el enlace está, el comportamiento es el mismo de antes.
+
+Validación: reconstruido el runtime y enlazado; los mismos ajustes del usuario pasan en runs oculto y visible de
+240 frames (sin crash). En esos runs el guard no llegó a saltar (la carrera depende del tiempo), pero la condición
+comprobada es exactamente la lectura que falló en el dump. El coste de arranque con Streamline sigue abierto
+(sección anterior); este arreglo evita que se convierta en crash con `run_speed` activo.
+
+
 
 - Solo pantalla de título (240 frames), no gameplay ni rutas; una GPU; ventana oculta y presentación mailbox.
 - No se midió PCL ni latencia de entrada; no hay RTX para probar DLSS + Reflex a la vez.

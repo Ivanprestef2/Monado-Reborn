@@ -220,6 +220,16 @@ static uint64_t call_guest3(Cpu *c, uint64_t fn, uint64_t x0, uint64_t x1, uint6
 // without that the followers keep following the old leader (the old one stays first).
 //   group = f_7000593120(&party manager)->+0x40 - 8
 static uint64_t field_group(Cpu *c, uint64_t pm) {
+    // f_7000593120 reads (*pm)+0x680 and then +0xda8 of that object with no null check. Right after the field
+    // object appears the scanner can find it before the game links +0x680, and the guest read faults at 0xda8
+    // (crash_20261118_200033, Reflex enabled: the longer startup stall widens the window). Only call it once
+    // the link exists; run_speed_leader simply retries on a later frame.
+    uint64_t obj = *(volatile uint64_t *)(uintptr_t)pm;
+    if (!obj || !*(volatile uint64_t *)(uintptr_t)(obj + 0x680)) {
+        static int warned;
+        if (warned < 3) { warned++; LOG("[party] field manager not linked yet: run-speed lookup deferred\n"); }
+        return 0;
+    }
     uint64_t slot = ((c->sp - 0x100) & ~15ull);  // (above the callee's frames: call_guest starts them at sp - 0x400)
     *(volatile uint64_t *)(uintptr_t)slot = pm;
     uint64_t holder = call_guest(c, 0x7000593120ull, slot, 0);
