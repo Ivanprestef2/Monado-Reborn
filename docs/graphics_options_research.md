@@ -58,7 +58,7 @@ Values today -> what a PC menu could offer:
 | Shadow map resolution 2x / 4x | scale the 1024 / 256 depth targets (extend tex_scalable with a "shadow" class) | GPU: shadow passes x4 / x16 pixels (they're ~small) | medium |
 | Sharpening (CAS / RCAS) | post pass in post_process (RCAS exists for FSR 1) | ~0.1 ms | low |
 | HDR output (HDR10) | HDR swapchain (VK_COLOR_SPACE_HDR10_ST2084) + replace / follow the game's tonemap with an HDR tonemapper, HUD at a paper-white level (the RenoDX-style approach). Zero-effort alternative today: NVIDIA RTX HDR (NVIDIA app) on the SDR image | small | high (real HDR) |
-| NVIDIA Reflex (low latency) | Streamline sl.reflex + NvLowLatencyVk.dll (already in <work dir>\sdk\sl); markers around the game's frame; with our frame lag / async worker | 0 | medium |
+| NVIDIA Reflex (low latency) | Streamline sl.reflex + sl.pcl + NvLowLatencyVk.dll (already in <work dir>\sdk\sl); markers around the game's frame; with our frame lag / async worker. **Feasibility checked 2026-11-18** (GTX 1050 Ti, driver 582.78: extension, feature, sleep and reports work); the work is splitting the runtime from DLSS and the per-frame token. Details: [reflex_research.md](reflex_research.md) | 0 | medium |
 | FOV slider | the projection is in the scene cbuf (cot(fov/2) = 2.4142 = 45 deg); find the game's FOV value in code / patch the projection build | 0 | medium |
 | Ultrawide / any aspect | runtime/nvn/widescreen code exists (from LASRecomp): check how far it works for XCDE (HUD placement) | small | medium |
 | Draw distance / LOD / foliage distance | the game's LOD selection (code / map data): find the distance tables, scale them | CPU + GPU, can be large | high (research) |
@@ -87,5 +87,6 @@ Values today -> what a PC menu could offer:
    FSR to the game's jitter + gTVelocity (find the velocity target in the frame - likely the 1280x720 RG16F written
    with the TMAA inputs) - also removes the camera-only ghosting of the current DLSS / FSR.
 4. Shadow map scaling.
-5. Reflex, FOV, sharpening slider.
+5. Reflex (feasibility done: [reflex_research.md](reflex_research.md); the low-latency gain at 60 FPS V-Sync is still
+   unmeasured), FOV, sharpening slider.
 6. Research: draw distance / LOD tables; HDR output.

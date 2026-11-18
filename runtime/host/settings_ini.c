@@ -120,6 +120,7 @@ void settings_load(void) {
         else if (!strcmp(k, "game_blur")) g_settings.game_blur = atoi(v) != 0;
         else if (!strcmp(k, "taa")) g_settings.taa_off = atoi(v) == 0;  // [XCDE] taa = 0 removes the game's temporal AA only
         else if (!strcmp(k, "vsync")) g_settings.vsync = atoi(v) != 0;
+        else if (!strcmp(k, "reflex")) g_settings.reflex = !strcmp(v, "on") ? 1 : !strcmp(v, "boost") ? 2 : 0;  // [XCDE] T272
         else if (!strcmp(k, "launcher_lang")) g_settings.ui_lang = !strcmp(v, "es") ? 0 : 1;
         else if (!strcmp(k, "stick_deadzone")) { int d = atoi(v); g_settings.stick_deadzone = d < 0 ? 0 : d > 30 ? 30 : d; }
         else if (!strcmp(k, "party_switch")) g_party_switch = atoi(v) != 0;  // [XCDE] party mod (runtime/hle/party.c)
@@ -180,6 +181,7 @@ void settings_save(void) {
     fprintf(f, "game_blur = %d\n", g_settings.game_blur);
     fprintf(f, "taa = %d\n", !g_settings.taa_off);
     fprintf(f, "vsync = %d\n", g_settings.vsync);
+    fprintf(f, "reflex = %s\n", g_settings.reflex == 2 ? "boost" : g_settings.reflex == 1 ? "on" : "off");  // [XCDE] T272
     fprintf(f, "stick_deadzone = %d\n", g_settings.stick_deadzone);
     fprintf(f, "launcher_lang = %s\n", g_settings.ui_lang ? "en" : "es");  // (the launcher's key: kept when the game saves)
     fprintf(f, "cutscenes = %s\n", g_settings.cutscene_mode == 1 ? "30" : g_settings.cutscene_mode == 2 ? "30fg" : "same");

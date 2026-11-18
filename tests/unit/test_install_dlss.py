@@ -29,6 +29,11 @@ class DLSSInstallerTests(unittest.TestCase):
         self.assertTrue(installer.URL.startswith('https://github.com/NVIDIA-RTX/Streamline/releases/download/'))
         self.assertEqual(len(installer.SHA256), 64)
 
+    def test_reflex_runtime_is_installed(self):
+        # [XCDE] T272: the Reflex plugin and its PC-latency module travel with the DLSS runtime
+        for name in ('sl.reflex.dll', 'sl.pcl.dll', 'NvLowLatencyVk.dll'):
+            self.assertIn(name, installer.REQUIRED)
+
     def test_invalid_archive_path_is_rejected(self):
         with self.assertRaises(ValueError):
             installer.production_members(['../bin/x64/sl.interposer.dll'])

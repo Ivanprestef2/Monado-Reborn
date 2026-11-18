@@ -6,6 +6,7 @@
 #include "../../runtime/settings.h"
 #include "../../runtime/quality_policy.h"
 #include "../../runtime/perf_overlay_opts.h"
+#include "../../runtime/nvn/vulkan/reflex.h"
 bool bind_settings_load(const char *key, const char *value) { (void)key; (void)value; return false; }
 void bind_settings_save(FILE *f) { fputs("mouse_look = 1\n", f); }
 int main(int argc, char **argv) {
@@ -20,7 +21,7 @@ int main(int argc, char **argv) {
           "gpu_gpl = off\ngpu_memory_budget = 0\ngpu_preset = performance\ngpu_keep_heavy = 1\n"
           "occlusion = on\namd_fix = off\nsession_fix = off\n"
           "vulkan_api = 1.2\nfps_overlay = 0\nfps_overlay_style = simple\nupscaler = auto\n"
-          "stick_deadzone = 20\neffects_off = 1\nrun_speed = 1.5\nui_scale = 30\nfps_overlay_scale = 300\nfps_overlay_position = bottom-right\nfuture_plugin = preserve this\n", f); fclose(f);
+          "stick_deadzone = 20\neffects_off = 1\nrun_speed = 1.5\nui_scale = 30\nfps_overlay_scale = 300\nfps_overlay_position = bottom-right\nreflex = boost\nfuture_plugin = preserve this\n", f); fclose(f);
     settings_load();
     assert(g_settings.run_speed == 1.5f);  // [XCDE] GitHub #100
     assert(g_settings.ui_scale == 50);  // [XCDE] GitHub #121: below the minimum, clamped
@@ -35,6 +36,7 @@ int main(int argc, char **argv) {
     assert(g_settings.vulkan_api == 12 && !g_settings.fps_overlay && g_settings.upscaler_auto);
     assert(g_settings.fps_overlay_style == FPS_OVERLAY_SIMPLE);
     assert(g_settings.fps_overlay_scale == PERF_OVERLAY_SCALE_MAX && g_settings.fps_overlay_pos == PERF_POS_BOTTOM_RIGHT);  // GitHub #147
+    assert(g_settings.reflex == REFLEX_BOOST);  // [XCDE] T272
     xcde_quality_apply(&g_settings,QUALITY_POTATO); g_settings.effects_off=EFFECT_SSR;
     g_settings.stick_deadzone = 0; settings_save();
     g_settings.gpu_uuid[0] = 0; g_settings.gpu_index = -1; g_settings.fps_overlay_style = FPS_OVERLAY_DETAILED; settings_load();
@@ -49,9 +51,11 @@ int main(int argc, char **argv) {
     char data[8192] = {0}; f = fopen(argv[1], "r"); assert(f);
     assert(fread(data, 1, sizeof data - 1, f)); fclose(f);
     assert(strstr(data, "future_plugin = preserve this"));
-    g_settings.res_mode = RES_1_5; g_settings.run_speed = 2.0f; g_settings.ui_scale = 75; g_settings.fps_overlay_scale = 80; g_settings.fps_overlay_pos = PERF_POS_TOP_RIGHT; settings_save();
-    g_settings.res_mode = RES_MATCH; g_settings.run_speed = 1.0f; g_settings.ui_scale = 100; g_settings.fps_overlay_scale = 0; g_settings.fps_overlay_pos = 0; settings_load();
+    assert(strstr(data, "reflex = boost"));  // [XCDE] T272
+    g_settings.res_mode = RES_1_5; g_settings.run_speed = 2.0f; g_settings.ui_scale = 75; g_settings.fps_overlay_scale = 80; g_settings.fps_overlay_pos = PERF_POS_TOP_RIGHT; g_settings.reflex = REFLEX_ON; settings_save();
+    g_settings.res_mode = RES_MATCH; g_settings.run_speed = 1.0f; g_settings.ui_scale = 100; g_settings.fps_overlay_scale = 0; g_settings.fps_overlay_pos = 0; g_settings.reflex = REFLEX_OFF; settings_load();
     assert(g_settings.res_mode == RES_1_5 && g_settings.run_speed == 2.0f);  // [XCDE] GitHub #100
+    assert(g_settings.reflex == REFLEX_ON);  // [XCDE] T272
     assert(g_settings.ui_scale == 75);  // [XCDE] GitHub #121
     assert(g_settings.fps_overlay_scale == 80 && g_settings.fps_overlay_pos == PERF_POS_TOP_RIGHT);  // GitHub #147
     // [XCDE] RCAS strength: unset stays "default" (FSR 1 0.9 / FSR 3 0.3); an explicit value round-trips, 0 = off

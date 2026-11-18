@@ -35,3 +35,21 @@ Justificación en ADR 0011. Se conserva la atribución y no se incorpora código
 ## T271 — tamaño del HUD (GitHub #121)
 
 - `runtime/nvn/vulkan/exec.c`: la clasificación de la caja 16:9 también corre en 16:9 con el HUD escalado; ancla por draw y escala plegada en el mapeo del viewport. `runtime/settings.h`, `host/settings_ini.c`, `ui/menu_vk.cpp`, `tools/launcher/launcher.cpp`: ajuste `ui_scale`. Nuevo helper `runtime/ui_scale.h` (compartido con `tests/native/test_ui_scale.c`). T271b: solo se escala el HUD de los bordes (popups, menús, diálogos y marcadores quedan como los dibuja el juego), grupos estables entre frames (anclas con histéresis) y `ui_backdrop_view` en `exec.c` (copia desplazada de la textura de la ventana para los draws del HUD reducido que leen la escena).
+
+## T272 — NVIDIA Reflex opcional (2026-11-18)
+
+- `runtime/nvn/vulkan/dlss.cpp`: el runtime de Streamline deja de depender de DLSS; carga las features que pida el
+  ajuste (DLSS y/o Reflex + PCL), fusiona requisitos de todas, y mantiene banderas separadas (`sl_rt_ok`, `dlss_ok`,
+  `reflex_ok`). Un DLSS no soportado (GTX sin RTX) ya no desactiva Reflex. Token de frame compartido (anillo de 8)
+  entre marcadores/sleep y `dlss_evaluate`, `slReflexSetOptions/GetState/Sleep` y `slPCLSetMarker`.
+- `runtime/nvn/vulkan/reflex.h` (nuevo): API C del frame loop (`reflex_frame_begin`, marcadores, frame del present).
+- `runtime/hle/framepace.c`: `slReflexSleep` y `eSimulationStart` una vez por frame en el límite del limiter.
+  `runtime/nvn/objects.c`: `eSimulationEnd`/`eRenderSubmitStart` al presentar. `runtime/nvn/vulkan/exec.c` y
+  `device.c`: el frame del present viaja con el trabajo del render worker y `vk_frame_end` marca alrededor de
+  `vkQueuePresentKHR`. `reflex = off | on | boost` en `xcde.ini` (por defecto off), F1 y launcher;
+  `XCDE_REFLEX=0/1/2` lo fuerza.
+- `tools/install_dlss.py`, `cmake/copy_upscaler_dlls.cmake`, `scripts/copy_upscaler_dlls.sh`, `NOTICE.md`:
+  `sl.reflex.dll`, `sl.pcl.dll` y `NvLowLatencyVk.dll` se despliegan con el resto del runtime NVIDIA.
+- Pruebas: `tests/native/test_settings_roundtrip.c` (clave `reflex`), `tests/unit/test_reflex_contracts.py` (fuente) y
+  `tests/unit/test_install_dlss.py` (DLLs). Investigación y límites: `docs/reflex_research.md` y
+  `docs/evidence/reflex_2026-11-18*.md`.

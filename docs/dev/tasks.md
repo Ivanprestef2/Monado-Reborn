@@ -1552,4 +1552,21 @@ Detalle: `docs/PERFORMANCE_UI.md`. Evidencia: `docs/evidence/performance_ui_2026
   superior mientras está (y vuelve 12 frames después).
   - El panel de las burbujas de NPC (shader `e3e86ad310e794ea`) no tiene su forma en las posiciones de vértice: su caja
     salía como un punto y heredaba el ancla de la esquina mientras su texto quedaba igual. Una caja sin tamaño no se
-    escala (comprobado con un guardado del usuario en el Distrito Comercial).
+- [ ] T272 **#reflex, investigación (2026-11-18): NVIDIA Reflex es viable, no está implementado.** Comprobado en la
+  máquina disponible (GTX 1050 Ti, driver 582.78): el controlador expone `VK_NV_low_latency`/`_2`, Streamline
+  2.14.16 responde `eOk` a `slIsFeatureSupported(kFeatureReflex)` con `lowLatencyAvailable = 1`, y 240 frames de
+  marcadores + `slReflexSleep` no dan errores; con DLSS también solicitada (sin RTX) Reflex sigue disponible.
+  Herramienta: `tools/reflex_probe.cpp`; log en `docs/evidence/reflex_2026-11-18_probe.txt` y resumen en
+  `docs/evidence/reflex_2026-11-18.md` → `docs/reflex_research.md` · Req: FR-044 (frame pacing), FR-052 (salida),
+  Art. IV ·
+  Done when: el runtime de Streamline deja de depender de DLSS, `reflex = on|off|boost` está en xcde.ini, launcher
+  y menú F1, `sl.reflex.dll`/`sl.pcl.dll` se despliegan, los marcadores y el *sleep* están en el bucle con un token
+  por frame compartido con DLSS, y la HUD de verificación de Reflex muestra `App_Called_Sleep = 1` y PCL distinto de
+  0 en las tres configuraciones (60 V-Sync, 120/mailbox, 30 con presents repetidos). La ganancia a 60 FPS con
+  V-Sync no se promete hasta medirla.
+  **Estado 2026-11-18:** implementado opt-in (`reflex = off` por defecto) en `runtime/nvn/vulkan/dlss.cpp` +
+  `reflex.h`, `framepace.c`, `objects.c`, `exec.c`, `device.c`, ajuste en `settings.h`/`settings_ini.c`/launcher/F1 y
+  despliegue de DLLs. Compila, enlaza y arranca en el juego real; `[reflex] frame loop active` con Reflex + PCL y
+  DLLs firmadas (GTX 1050 Ti, driver 582.78). Evidencia: `docs/evidence/reflex_impl_2026-11-18.md`. Pendiente para
+  cerrar: medición con la HUD de verificación/FrameView, gameplay (los runs fueron solo pantalla de título) y la
+  anomalía de arranque con Streamline cargado (vigilada en la evidencia; no es el sleep ni el proxy).

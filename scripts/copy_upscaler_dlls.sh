@@ -5,7 +5,8 @@
 cd "$(dirname "$0")/.."
 S=${SDK_DIR:-sdk}
 for f in "$S/ffx/PrebuiltSignedDLL/amd_fidelityfx_vk.dll" "$S/sl/bin/x64/sl.interposer.dll" "$S/sl/bin/x64/sl.common.dll" \
-         "$S/sl/bin/x64/sl.dlss.dll" "$S/sl/bin/x64/nvngx_dlss.dll" "$S/sl/bin/x64/NvLowLatencyVk.dll"; do
+         "$S/sl/bin/x64/sl.dlss.dll" "$S/sl/bin/x64/nvngx_dlss.dll" "$S/sl/bin/x64/sl.reflex.dll" \
+         "$S/sl/bin/x64/sl.pcl.dll" "$S/sl/bin/x64/NvLowLatencyVk.dll"; do
   b=build/$(basename "$f")
   [ -f "$b" ] && [ ! "$f" -nt "$b" ] && continue
   cp -f "$f" "$b" 2>/dev/null && echo "copied $(basename "$f")" || echo "missing $f (that upscaler will be unavailable)"

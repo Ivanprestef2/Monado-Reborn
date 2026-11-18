@@ -1,0 +1,46 @@
+# NVIDIA Reflex (T272) - implementation validation, 2026-11-18
+# Machine: Windows 10.0.19044 | NVIDIA GTX 1050 Ti (Pascal, no RTX) | driver 582.78 | Vulkan 1.4.312 | 8 logical CPUs
+# Build: generated game objects + runtime objects compiled with the project flags (zig cc/c++), linked as
+# scripts/link_gfx.sh; no game data or generated code was edited. Paths sanitized to <repo>.
+
+================================================================================
+# Run A - `xcde.ini`: upscaler = fsr, reflex = on (reflex-only; Streamline loaded with Reflex + PCL).
+#   set LARECOMP_HIDDEN=1; set XCDE_INI=<repo>\build\reflex_probe\reflex_only.ini
+#   set LARECOMP_WINDOW_SHOT=240; set LARECOMP_EXIT_AFTER_SHOT=1; build\xcde.exe --game targets
+================================================================================
+[dlss] DLSS no solicitado (elige Automático o DLSS y reinicia)
+[streamline] loaded (requirements: dlss 0, reflex 1, pcl 1; 2 feature(s))
+[reflex] Reflex disponible (baja latencia) en la GPU activa
+[reflex] Reflex disponible (baja latencia) en la GPU activa
+[vk] present mode mailbox
+[reflex] frame loop active (frame 1)
+[stall] no frame for 5 s (last frame 7): report 1
+[stall] no frame for 5 s (last frame 8): report 2
+[stall] no frame for 5 s (last frame 13): report 3
+[vk] saved build/window.png (1280x720)
+File '<repo>\build\/sl.pcl.dll' is signed by NVIDIA and the signature was verified.
+File '<repo>\build\/sl.reflex.dll' is signed by NVIDIA and the signature was verified.
+File '<repo>\build\/NvLowLatencyVk.dll' is signed by NVIDIA and the signature was verified.
+
+================================================================================
+# Run B - same but `reflex = off` (no Streamline): the same prewarm phase finishes in ~5.5 s and the watchdog
+# does not fire. Key lines:
+================================================================================
+[dlss] DLSS no solicitado (elige Automático o DLSS y reinicia)
+[reflex] Reflex no solicitado (xcde.ini reflex = off)
+[vk] present mode mailbox
+[vk] t=5.5 frame 8 2.2 fps max 2003ms level  (1 draws, 0 skipped, 9 passes, 0 dispatches, 16 flushes, wait 6ms, compile 1064, fbcopy 0, upload 0.0MB, occlusion 0 (0 hidden), build waits 1 (0.1ms), prewarm 215 progs 0 pipes, gpl cached 0 linked 1 libs 2128 optimized 1, textures 11 MB (astc 0 MB), pipelines 1)
+[vk] saved build/window.png (1280x720)
+
+================================================================================
+# Run C - `upscaler = auto`, `reflex = off` on this GPU: Streamline loads for DLSS, DLSS is unsupported, and
+# the same startup stalls appear -> the slowdown is the Streamline runtime load, not Reflex.
+================================================================================
+[reflex] Reflex no solicitado (xcde.ini reflex = off)
+[streamline] loaded (requirements: dlss 1, reflex 0, pcl 0; 1 feature(s))
+[dlss] DLSS no compatible con esta GPU/controlador
+[stall] no frame for 5 s (last frame 7): report 1
+[vk] t=11.8 frame 8 0.7 fps max 8174ms level  (1 draws, 0 skipped, 9 passes, 0 dispatches, 16 flushes, wait 4ms, compile 1064, fbcopy 0, upload 0.0MB, occlusion 0 (0 hidden), build waits 1 (0.1ms), prewarm 215 progs 0 pipes, gpl cached 0 linked 1 libs 1452 optimized 1, textures 11 MB (astc 0 MB), pipelines 1)
+[stall] no frame for 5 s (last frame 8): report 2
+[stall] no frame for 5 s (last frame 13): report 3
+[vk] t=29.5 frame 14 0.5 fps max 8146ms level  (24 draws, 0 skipped, 71 passes, 0 dispatches, 10 flushes, wait 24ms, compile 454, fbcopy 0, upload 5.3MB, occlusion 0 (0 hidden), build waits 24 (0.6ms), prewarm 290 progs 0 pipes, gpl cached 0 linked 24 libs 774 optimized 1, textures 102 MB (astc 0 MB), pipelines 25)

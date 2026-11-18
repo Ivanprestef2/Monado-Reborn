@@ -1,0 +1,112 @@
+# Reflex/Streamline probe - full run, 2026-11-18 (Windows 10.0.19044, NVIDIA GTX 1050 Ti, driver 582.78,
+# Vulkan 1.4.312). Source: tools/reflex_probe.cpp, built with the command in its header. Paths -> <repo>.
+# Features requested: kFeatureReflex + kFeaturePCL. 240 frames, hidden window, FIFO swapchain.
+
+=== Reflex probe on this machine ===
+File '<repo>\sdk\sl\bin\x64/sl.common.dll' is signed by NVIDIA and the signature was verified.
+File '<repo>\sdk\sl\bin\x64/sl.deepdvc.dll' is signed by NVIDIA and the signature was verified.
+[sl warn] [18-18-16][streamline][warn][tid:10040][0s:435ms:992us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.deepdvc' since it is was not requested by the host
+File '<repo>\sdk\sl\bin\x64/sl.directsr.dll' is signed by NVIDIA and the signature was verified.
+[sl warn] [18-18-16][streamline][warn][tid:10040][0s:451ms:858us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.directsr' since it is was not requested by the host
+File '<repo>\sdk\sl\bin\x64/sl.dlss.dll' is signed by NVIDIA and the signature was verified.
+[sl ERROR] [18-18-16][streamline][error][tid:10040][0s:592ms:247us]vulkan.cpp:2975[getOpticalFlowQueueInfo] Physical device features required to support Native VK OFA not supported by HW!
+[sl warn] [18-18-16][streamline][warn][tid:10040][0s:592ms:940us]commonEntry.cpp:1049[getNGXFeatureRequirements] Native VK OFA feature not supported on this device! Falling back to OFA VK-CUDA interop feature.
+[sl warn] [18-18-16][streamline][warn][tid:10040][1s:033ms:497us]dlssEntry.cpp:208[updateEmbeddedJSON] Failed to obtain DLSS min spec requirements from NGX, using SL defaults
+[sl warn] [18-18-16][streamline][warn][tid:10040][1s:034ms:187us]dlssEntry.cpp:268[updateEmbeddedJSON] sl.dlss not supported on current hardware
+[sl warn] [18-18-16][streamline][warn][tid:10040][1s:034ms:658us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.dlss' since it is was not requested by the host
+File '<repo>\sdk\sl\bin\x64/sl.dlss_d.dll' is signed by NVIDIA and the signature was verified.
+[sl ERROR] [18-18-16][streamline][error][tid:10040][1s:049ms:466us]vulkan.cpp:2975[getOpticalFlowQueueInfo] Physical device features required to support Native VK OFA not supported by HW!
+[sl warn] [18-18-16][streamline][warn][tid:10040][1s:050ms:080us]commonEntry.cpp:1049[getNGXFeatureRequirements] Native VK OFA feature not supported on this device! Falling back to OFA VK-CUDA interop feature.
+[sl warn] [18-18-16][streamline][warn][tid:10040][1s:060ms:184us]dlss_dEntry.cpp:210[updateEmbeddedJSON] DLSSD feature is not supported. Please check if you have a valid nvngx_dlssd.dll or your driver is supporting DLSSD.
+[sl warn] [18-18-16][streamline][warn][tid:10040][1s:060ms:978us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.dlss_d' since it is was not requested by the host
+File '<repo>\sdk\sl\bin\x64/sl.dlss_g.dll' is signed by NVIDIA and the signature was verified.
+[sl ERROR] [18-18-16][streamline][error][tid:10040][1s:080ms:362us]vulkan.cpp:2975[getOpticalFlowQueueInfo] Physical device features required to support Native VK OFA not supported by HW!
+[sl warn] [18-18-16][streamline][warn][tid:10040][1s:081ms:030us]commonEntry.cpp:1049[getNGXFeatureRequirements] Native VK OFA feature not supported on this device! Falling back to OFA VK-CUDA interop feature.
+[sl warn] [18-18-16][streamline][warn][tid:10040][1s:090ms:975us]dlss_gEntry.cpp:143[updateEmbeddedJSON] Failed to obtain DLSS-G min spec requirements from NGX, using SL defaults
+[sl warn] [18-18-16][streamline][warn][tid:10040][1s:091ms:576us]dlss_gEntry.cpp:345[updateEmbeddedJSON] Disabling DLSS-G since it is not supported on current hardware
+[sl warn] [18-18-16][streamline][warn][tid:10040][1s:092ms:103us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.dlss_g' since it is was not requested by the host
+File '<repo>\sdk\sl\bin\x64/sl.nis.dll' is signed by NVIDIA and the signature was verified.
+File '<repo>\sdk\sl\bin\x64/sl.nvperf.dll' is signed by NVIDIA and the signature was verified.
+[sl warn] [18-18-16][streamline][warn][tid:10040][1s:129ms:022us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.nis' since it is was not requested by the host
+[sl warn] [18-18-16][streamline][warn][tid:10040][1s:143ms:175us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.nvperf' since it is was not requested by the host
+File '<repo>\sdk\sl\bin\x64/sl.pcl.dll' is signed by NVIDIA and the signature was verified.
+File '<repo>\sdk\sl\bin\x64/sl.reflex.dll' is signed by NVIDIA and the signature was verified.
+slInit ok
+Streamline load + slInit took 1163 ms
+  reflex requirements: 0 instance ext, 1 device ext, 0 gfx queues, 0 compute queues, 0 feats12, 0 feats13
+    dev ext : VK_NV_low_latency
+  pcl requirements: 0 instance ext, 0 device ext, 0 gfx queues, 0 compute queues, 0 feats12, 0 feats13
+adapter 0: NVIDIA GeForce GTX 1050 Ti (vendor 0x10de)
+step: surface
+probe surface ok
+step: queues
+device: 2 extensions, 0 extra gfx queues, 0 extra compute queues
+step: create device (1 queues, 2 exts)
+step: slSetVulkanInfo
+[sl warn] [18-18-16][streamline][warn][tid:10040][1s:230ms:677us]vulkan.cpp:1176[init] VK_EXT_debug_utils extension not enabled - VK debug names and profiling markers disabled!
+File '<repo>\sdk\sl\bin\x64/NvLowLatencyVk.dll' is signed by NVIDIA and the signature was verified.
+[sl warn] [18-18-16][streamline][warn][tid:10040][1s:264ms:360us]pluginManager.cpp:1272[processPluginHooks] Hook sl.common:Vulkan:CmdBindPipeline is NOT supported, plugin will not function properly
+slSetVulkanInfo: 0
+step: slIsFeatureSupported
+[sl warn] [18-18-16][streamline][warn][tid:10040][1s:265ms:137us]pluginManager.cpp:1272[processPluginHooks] Hook sl.common:Vulkan:CmdBindDescriptorSets is NOT supported, plugin will not function properly
+slIsFeatureSupported(kFeatureReflex): 0
+[sl warn] [18-18-16][streamline][warn][tid:10040][1s:265ms:943us]pluginManager.cpp:1272[processPluginHooks] Hook sl.common:Vulkan:BeginCommandBuffer is NOT supported, plugin will not function properly
+slIsFeatureSupported(kFeaturePCL): 0
+  slReflexGetState: ok
+  slReflexSetOptions: ok
+  slReflexSleep: ok
+  slPCLSetMarker: ok
+  slPCLSetOptions: ok
+slPCLSetOptions: 0
+step: slReflexGetState
+slReflexGetState: 0  lowLatencyAvailable=1 latencyReportAvailable=1 flashDriver=1
+slReflexSetOptions(eLowLatency): 0
+step: swapchain
+proxy surface ok
+proxies: create=1 images=1 acquire=1 present=1
+swapchain: 0 (640x360, 3 images)
+frames 240: sleep avg 0.038 ms, max 0.177 ms (errors 0); frame avg 6.946 ms; marker errors 0
+after frames: slReflexGetState 0 lowLatency=1 reportAvailable=1
+report frame 234: simStart 1795015099364035 simEnd 1795015099364035 submit 1795015099364035..1795015099370980 present 1795015099370980..1795015099370980 gpu 1795015099385188..1795015099385192 gpuActive 4 us gpuFrame 6958 us
+report frame 233: simStart 1795015099357512 simEnd 1795015099357512 submit 1795015099357512..1795015099364035 present 1795015099364035..1795015099364035 gpu 1795015099378228..1795015099378234 gpuActive 6 us gpuFrame 6900 us
+report frame 232: simStart 1795015099350523 simEnd 1795015099350523 submit 1795015099350523..1795015099357512 present 1795015099357512..1795015099357512 gpu 1795015099371329..1795015099371334 gpuActive 5 us gpuFrame 6946 us
+report frame 231: simStart 1795015099343528 simEnd 1795015099343528 submit 1795015099343528..1795015099350523 present 1795015099350523..1795015099350523 gpu 1795015099364383..1795015099364388 gpuActive 5 us gpuFrame 7011 us
+
+================================================================================
+# Second run: PROBE_DLSS=1 (DLSS requested too, as the game does on RTX; this GPU is a GTX 1050 Ti, so
+# sl.dlss reports unsupported). Reflex stays available and its markers/sleep keep working:
+================================================================================
+[sl warn] [18-18-19][streamline][warn][tid:7176][0s:542ms:539us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.deepdvc' since it is was not requested by the host
+[sl warn] [18-18-19][streamline][warn][tid:7176][0s:563ms:840us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.directsr' since it is was not requested by the host
+[sl warn] [18-18-19][streamline][warn][tid:7176][0s:718ms:128us]commonEntry.cpp:1049[getNGXFeatureRequirements] Native VK OFA feature not supported on this device! Falling back to OFA VK-CUDA interop feature.
+[sl warn] [18-18-20][streamline][warn][tid:7176][1s:170ms:536us]dlssEntry.cpp:208[updateEmbeddedJSON] Failed to obtain DLSS min spec requirements from NGX, using SL defaults
+[sl warn] [18-18-20][streamline][warn][tid:7176][1s:171ms:463us]dlssEntry.cpp:268[updateEmbeddedJSON] sl.dlss not supported on current hardware
+[sl warn] [18-18-20][streamline][warn][tid:7176][1s:191ms:627us]commonEntry.cpp:1049[getNGXFeatureRequirements] Native VK OFA feature not supported on this device! Falling back to OFA VK-CUDA interop feature.
+[sl warn] [18-18-20][streamline][warn][tid:7176][1s:203ms:994us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.dlss_d' since it is was not requested by the host
+[sl warn] [18-18-20][streamline][warn][tid:7176][1s:219ms:982us]commonEntry.cpp:1049[getNGXFeatureRequirements] Native VK OFA feature not supported on this device! Falling back to OFA VK-CUDA interop feature.
+[sl warn] [18-18-20][streamline][warn][tid:7176][1s:231ms:427us]dlss_gEntry.cpp:143[updateEmbeddedJSON] Failed to obtain DLSS-G min spec requirements from NGX, using SL defaults
+[sl warn] [18-18-20][streamline][warn][tid:7176][1s:232ms:529us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.dlss_g' since it is was not requested by the host
+[sl warn] [18-18-20][streamline][warn][tid:7176][1s:252ms:247us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.nis' since it is was not requested by the host
+[sl warn] [18-18-20][streamline][warn][tid:7176][1s:269ms:701us]pluginManager.cpp:797[mapPlugins] Ignoring plugin 'sl.nvperf' since it is was not requested by the host
+[sl warn] [18-18-20][streamline][warn][tid:7176][1s:292ms:413us]pluginManager.cpp:1090[loadPlugins] Ignoring plugin 'sl.dlss' since it is not supported on this platform
+slInit ok
+Streamline load + slInit took 1296 ms
+  reflex requirements: 0 instance ext, 1 device ext, 0 gfx queues, 0 compute queues, 0 feats12, 0 feats13
+    dev ext : VK_NV_low_latency
+  pcl requirements: 0 instance ext, 0 device ext, 0 gfx queues, 0 compute queues, 0 feats12, 0 feats13
+  dlss requirements: 0 instance ext, 0 device ext, 0 gfx queues, 0 compute queues, 0 feats12, 0 feats13
+step: slIsFeatureSupported
+slIsFeatureSupported(kFeatureReflex): 0
+slIsFeatureSupported(kFeaturePCL): 0
+  slReflexSetOptions: ok
+slReflexGetState: 0  lowLatencyAvailable=1 latencyReportAvailable=1 flashDriver=1
+slReflexSetOptions(eLowLatency): 0
+proxy surface ok
+proxies: create=1 images=1 acquire=1 present=1
+swapchain: 0 (640x360, 3 images)
+frames 240: sleep avg 0.083 ms, max 10.304 ms (errors 0); frame avg 6.945 ms; marker errors 0
+after frames: slReflexGetState 0 lowLatency=1 reportAvailable=1
+report frame 234: simStart 1795015102802487 simEnd 1795015102802487 submit 1795015102802487..1795015102808464 present 1795015102808464..1795015102809464 gpu 1795015102823058..1795015102823062 gpuActive 4 us gpuFrame 6953 us
+report frame 233: simStart 1795015102795492 simEnd 1795015102795492 submit 1795015102795492..1795015102801487 present 1795015102801487..1795015102801487 gpu 1795015102816105..1795015102816109 gpuActive 4 us gpuFrame 6861 us
+report frame 232: simStart 1795015102788497 simEnd 1795015102788497 submit 1795015102788497..1795015102794492 present 1795015102794492..1795015102795492 gpu 1795015102809244..1795015102809248 gpuActive 4 us gpuFrame 7062 us
+report frame 231: simStart 1795015102781503 simEnd 1795015102781503 submit 1795015102781503..1795015102787498 present 1795015102787498..1795015102788497 gpu 1795015102802182..1795015102802186 gpuActive 4 us gpuFrame 6946 us

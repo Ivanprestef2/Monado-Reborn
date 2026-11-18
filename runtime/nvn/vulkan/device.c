@@ -16,6 +16,7 @@
 #include "../../ui/menu.h"
 #include "vk.h"
 #include "temporal.h"
+#include "reflex.h"  // [XCDE] T272: NVIDIA Reflex present markers
 #include "../../render_policy.h"
 #include "../../native_intervals.h"
 #include "gpu_probe.h"
@@ -990,7 +991,12 @@ void vk_frame_end(const char *shot_path) {
     extern const char *volatile g_rq_where;
     const char *was_pr = g_rq_where;
     vk_rq_at("vkQueuePresentKHR");
+    // [XCDE] T272: the render submit ends here; present markers wrap the frame's own present (repeat presents do not
+    // get a second set: reflex_present_marker clears the present frame on ePresentEnd).
+    reflex_present_marker(REFLEX_SUBMIT_END);
+    reflex_present_marker(REFLEX_PRESENT_START);
     VkResult r = sc_present(g_vk.queue, &pi);
+    reflex_present_marker(REFLEX_PRESENT_END);
     vk_rq_at(was_pr);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) recreate_swapchain();
     cur_frame.ok = false;
@@ -1530,6 +1536,7 @@ void backend_present(NvnTexture *t) {
     } else {
         renderer_submit();
     }
+    reflex_clear_present_frame();  // [XCDE] T272: a headless / failed present never leaks its frame into a repeat
     extern void vk_prof_frame(uint64_t frame, uint64_t present_ns);
     if (aspect_changed) tmp_reset_history();
     vk_prof_frame(total_frames, SDL_GetTicksNS() - t0);

@@ -2,7 +2,8 @@
 # runtime DLLs from SDK_DIR beside the executable in OUT when they are newer. A missing DLL only leaves that upscaler
 # unavailable. (Vendor binaries: never in git.)
 foreach(f ffx/PrebuiltSignedDLL/amd_fidelityfx_vk.dll sl/bin/x64/sl.interposer.dll sl/bin/x64/sl.common.dll
-          sl/bin/x64/sl.dlss.dll sl/bin/x64/nvngx_dlss.dll sl/bin/x64/NvLowLatencyVk.dll)
+          sl/bin/x64/sl.dlss.dll sl/bin/x64/nvngx_dlss.dll sl/bin/x64/sl.reflex.dll sl/bin/x64/sl.pcl.dll
+          sl/bin/x64/NvLowLatencyVk.dll)
   get_filename_component(name "${f}" NAME)
   if(EXISTS "${SDK_DIR}/${f}")
     if(NOT EXISTS "${OUT}/${name}" OR "${SDK_DIR}/${f}" IS_NEWER_THAN "${OUT}/${name}")

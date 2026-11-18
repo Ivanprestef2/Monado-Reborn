@@ -157,6 +157,7 @@ struct Cfg {
     bool game_blur = true;  // the game's own AA / temporal AA / motion blur (lib_nx.ini)
     bool taa = true;        // the game's temporal AA alone (lib_nx.ini tmaa; false removes only it)
     bool vsync = true;      // FIFO presentation at 30 / 60 fps
+    int reflex = 0;         // [XCDE] T272: NVIDIA Reflex 0 off, 1 on, 2 on + boost (xcde.ini reflex)
     int cutscenes = 0;      // T224: 0 at the FPS setting, 1 at 30 (xcde.ini cutscenes = same | 30)
     bool cut_fg = false;    // T224: cutscenes at 30 + frame generation, gameplay without it (xcde.ini cutscenes = 30fg)
     bool party_switch = false;  // party mod: switch the controlled character (F2 / L2 + L1 / R1), runtime/hle/party.c
@@ -599,6 +600,7 @@ static void load() {
         else if (!strcmp(k, "game_blur")) g.game_blur = atoi(v) != 0;
         else if (!strcmp(k, "taa")) g.taa = atoi(v) != 0;
         else if (!strcmp(k, "vsync")) g.vsync = atoi(v) != 0;
+        else if (!strcmp(k, "reflex")) g.reflex = !strcmp(v, "on") ? 1 : !strcmp(v, "boost") ? 2 : 0;  // [XCDE] T272
         else if (!strcmp(k, "cutscenes")) { g.cutscenes = !strcmp(v, "30") || !strcmp(v, "30fg") ? 1 : 0; g.cut_fg = !strcmp(v, "30fg"); }
         else if (!strcmp(k, "party_switch")) g.party_switch = atoi(v) != 0;
         else if (!strcmp(k, "run_speed")) { float x = (float)atof(v); g.run_speed = x < 1.0f ? 1.0f : x > 2.0f ? 2.0f : x; }
@@ -681,6 +683,7 @@ static bool save() {
     fprintf(f, "game_blur = %d\n", g.game_blur);
     fprintf(f, "taa = %d\n", g.taa);
     fprintf(f, "vsync = %d\n", g.vsync);
+    fprintf(f, "reflex = %s\n", g.reflex == 2 ? "boost" : g.reflex == 1 ? "on" : "off");  // [XCDE] T272
     fprintf(f, "cutscenes = %s\n", g.cut_fg ? "30fg" : g.cutscenes ? "30" : "same");
     fprintf(f, "party_switch = %d\n", g.party_switch);
     fprintf(f, "run_speed = %.2f\n", g.run_speed);
@@ -1786,6 +1789,10 @@ static void tab_graphics() {
     int route=selected_gpu ? xcde_vulkan_route(selected_gpu->vulkan_routes,10+(int)VK_API_VERSION_MINOR(loader_api),g.vulkan_api,&route_fallback) : 0;
     bool dlss_files=exists("build/sl.interposer.dll") && exists("build/sl.common.dll") && exists("build/sl.dlss.dll") && exists("build/nvngx_dlss.dll");
     bool dlss_candidate=selected_gpu && selected_gpu->vendor==0x10de && route>=13 && dlss_files;
+    // [XCDE] T272: NVIDIA Reflex needs the interposer, the common plugin and the Reflex/PCL modules (no RTX)
+    bool reflex_files=exists("build/sl.interposer.dll") && exists("build/sl.common.dll") && exists("build/sl.reflex.dll") &&
+                      exists("build/sl.pcl.dll") && exists("build/NvLowLatencyVk.dll");
+    bool reflex_candidate=selected_gpu && selected_gpu->vendor==0x10de && route>=13 && reflex_files;
     if (ImGui::CollapsingHeader(g.ui_lang ? "Advanced GPU / Vulkan (restart)" : "GPU / Vulkan avanzado (reiniciar)")) {
     ImGui::SeparatorText("GPU / Vulkan");
     xcde_gpu_picker(g.ui_lang ? "Graphics adapter" : "Adaptador gráfico", g.gpu_uuid, sizeof g.gpu_uuid,
@@ -1951,6 +1958,26 @@ static void tab_graphics() {
     ImGui::Checkbox(T("V-Sync (con 30 / 60 FPS)"), &g.vsync);
     ImGui::SetItemTooltip(T("Cada imagen se muestra exactamente una vez, sincronizada con la pantalla: movimiento\n"
                           "fluido (sin imágenes repetidas o saltadas). Con más de 60 FPS o sin límite no se aplica."));
+    {   // [XCDE] T272: NVIDIA Reflex (opt-in; no RTX needed, unlike DLSS)
+        const char *rx_en[] = {"Off", "On", "On + Boost"};
+        const char *rx_es[] = {"Desactivado", "Activado", "Activado + Boost"};
+        ImGui::BeginDisabled(!reflex_candidate);
+        ImGui::SetNextItemWidth(320 * g_scale);
+        monado_combo(g.ui_lang ? "NVIDIA Reflex (low latency)" : "NVIDIA Reflex (baja latencia)", &g.reflex,
+                     g.ui_lang ? rx_en : rx_es, 3);
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("%s", g.ui_lang
+                ? "NVIDIA only (GTX 900 and newer; no RTX required). Lets the driver pace the CPU at the frame\n"
+                  "boundary to reduce input latency. Applies when the game starts. Off by default: measure it first."
+                : "Solo NVIDIA (GTX 900 o superior; no hace falta RTX). Deja que el controlador marque el ritmo de la\n"
+                  "CPU al final del frame para reducir la latencia de entrada. Se aplica al iniciar el juego.\n"
+                  "Desactivado por defecto: mide antes de dejarlo activo.");
+        if (!reflex_files) ImGui::TextDisabled(g.ui_lang ? "Reflex: official NVIDIA runtime not installed (sl.reflex.dll / sl.pcl.dll)."
+                                                         : "Reflex: falta el runtime oficial NVIDIA (sl.reflex.dll / sl.pcl.dll).");
+        else if (!reflex_candidate) ImGui::TextDisabled(g.ui_lang ? "Reflex needs a selected NVIDIA GPU and Vulkan 1.3+."
+                                                                  : "Reflex necesita una GPU NVIDIA seleccionada y Vulkan 1.3+.");
+    }
     static const char *cut_ui[] = {"Como el resto del juego", "30 estables (como en Switch)"};
     ImGui::SetNextItemWidth(320 * g_scale);
     monado_combo(T("Cinemáticas"), &g.cutscenes, TL(cut_ui, 2).p, 2);

@@ -1,4 +1,4 @@
-"""T257: install matching production DLSS SR binaries from NVIDIA's official release.
+"""T257/T272: install matching production DLSS SR and Reflex binaries from NVIDIA's official release.
 
 Downloads the complete official SDK, verifies its pinned SHA-256, extracts only
 bin/x64 production runtime DLLs plus licence files, then atomically deploys them.
@@ -17,8 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 VERSION = '2.14.16'
 URL = f'https://github.com/NVIDIA-RTX/Streamline/releases/download/v{VERSION}/streamline-sdk-v{VERSION}.zip'
 SHA256 = '32041e51db0cab709a271b72a352281b690c2abbd669a827809401a5dd23956b'
-REQUIRED = ('sl.interposer.dll', 'sl.common.dll', 'sl.dlss.dll', 'nvngx_dlss.dll')
-OPTIONAL = ('NvLowLatencyVk.dll',)
+REQUIRED = ('sl.interposer.dll', 'sl.common.dll', 'sl.dlss.dll', 'nvngx_dlss.dll',
+            'sl.reflex.dll', 'sl.pcl.dll', 'NvLowLatencyVk.dll')
+OPTIONAL = ()
 
 
 def production_members(names):

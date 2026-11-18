@@ -19,9 +19,16 @@ vulkan_api = auto
 upscaler = auto
 fps_overlay = 1
 fps_overlay_style = detailed
+reflex = off
 ```
 
 `vulkan_api` también admite `1.2`, `1.3`, `1.4`; `fps_overlay` admite `0/1`; `fps_overlay_style` admite `detailed` (FPS, mínimos 1% / 0.1%, gráfica de tiempos, tiempo y esperas de GPU, carga de GPU / CPU / VRAM / RAM y resolución; GitHub #39) o `simple` (FPS y ms). Se cambia en vivo desde F1. `fps_overlay_scale` (50–150, en %; 100 por defecto) y `fps_overlay_position` (`top-left`, `top-right`, `bottom-left`, `bottom-right`) fijan su tamaño y esquina (GitHub #147), también en F1 y en el lanzador. Ambas interfaces conservan estas claves y las de otras versiones.
+
+`reflex` (T272) es **opt-in y solo NVIDIA** (GeForce 900 o superior; no hace falta RTX): `off` por defecto, `on` o
+`boost` activan Reflex de baja latencia cuando la GPU y el controlador lo soportan (`VK_NV_low_latency`). Se elige en
+la pestaña Gráficos del launcher y en el menú F1; si el juego arrancó con `reflex = off` y Streamline no estaba
+cargado, activarlo en F1 requiere reiniciar. `XCDE_REFLEX=0/1/2` lo fuerza para pruebas A/B. La ganancia a 60 FPS con
+V-Sync **no está medida**: ver `docs/reflex_research.md` y la HUD de verificación de Reflex.
 
 ## Runtime oficial NVIDIA instalado
 

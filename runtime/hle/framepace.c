@@ -19,6 +19,7 @@
 #include "../settings.h"
 #include "../kernel.h"
 #include "../frame_clock.h"
+#include "../nvn/vulkan/reflex.h"  // [XCDE] T272: NVIDIA Reflex sleep at the frame boundary
 
 // [XCDE] T249: one sample per guest frame, independent of presentation/FG and selected FPS.
 static XcdeFrameClock xcde_clock;
@@ -67,6 +68,7 @@ uint32_t rt_frame_steps(uint32_t interval) {
 
 static uint64_t lim_last, lim_iv[8];
 static int lim_n, lim_turns_since_sleep = -1;
+static bool reflex_begun;  // [XCDE] T272: one Reflex frame (token, markers, sleep) per game frame
 uint64_t g_limiter_slept_ns;  // (stats)
 
 // [XCDE] frame rate option (launcher "FPS": xcde.ini fps = 30 | 60 | 120 | 144 | ... | unlimited). The game's limiter
@@ -707,6 +709,8 @@ static void menu_clock_update(void) {
 }
 
 void xcde_limiter_done(void) {
+    reflex_begun = false;  // [XCDE] T272: the frame boundary: the next frame may sleep for Reflex again
+    reflex_marker(REFLEX_SIM_START);  // the next simulation really starts here (the sleep happened in the spin above)
     xcde_frame_clock_step(&xcde_clock, xcde_frame_now_ns());
     fvalfind();
     floatfind();
@@ -732,6 +736,9 @@ void xcde_limiter_done(void) {
 }
 
 void xcde_limiter_spin(void) {
+    // [XCDE] T272: the game waits here for its next frame; Reflex sleeps in the same place (no-op unless enabled and
+    // supported). Before the T157 prediction below, so its nap only covers the time Reflex did not use.
+    if (!reflex_begun) { reflex_begun = true; reflex_frame_begin(); }
     static int on = -1;
     if (on < 0) { const char *e = ENV("XCDE_LIMITER_SLEEP"); on = (!e || atoi(e) != 0) && !diag_deterministic(); }
     if (!on || lim_n < 8 || !lim_last) return;

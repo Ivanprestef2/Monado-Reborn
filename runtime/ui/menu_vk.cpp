@@ -29,6 +29,7 @@ void input_reset(void);
 void vk_request_swapchain_recreate(void);
 bool dlss_available(void);
 const char *dlss_status(void);
+#include "../nvn/vulkan/reflex.h"  // [XCDE] T272: NVIDIA Reflex option and status
 bool diag_deterministic(void);
 bool tmp_jitter_active(void);  // a temporal upscaler is selected: the game's TAA is off (runtime/hle/graphics.c)
 void plat_terminate(void);  // [XCDE] GitHub #22: the F1 menu's "exit the game" button (the platform's immediate exit)
@@ -385,6 +386,21 @@ static void ui(void) {
             ImGui::Checkbox(T("Mostrar FPS en la barra de título"), &g_settings.show_fps);
             ImGui::SeparatorText(T("Velocidad"));
             if (ImGui::Checkbox(T("V-Sync (con 30 / 60 FPS)"), &g_settings.vsync)) vk_request_swapchain_recreate();
+            {   // [XCDE] T272: NVIDIA Reflex (opt-in; live only when the runtime was loaded at startup)
+                static const char *rx_es[] = {"Desactivado", "Activado", "Activado + Boost"};
+                static const char *rx_en[] = {"Off", "On", "On + Boost"};
+                const bool en = g_settings.ui_lang != 0;
+                if (monado_combo(en ? "NVIDIA Reflex (low latency)" : "NVIDIA Reflex (baja latencia)", &g_settings.reflex,
+                                 en ? rx_en : rx_es, 3))
+                    reflex_set_mode(g_settings.reflex);
+                ImGui::SetItemTooltip("%s", en
+                    ? "NVIDIA only. Lets the driver pace the CPU at the frame boundary to reduce input latency.\n"
+                      "Applies at once when the game started with it on; otherwise restart after enabling."
+                    : "Solo NVIDIA. Deja que el controlador marque el ritmo de la CPU al final del frame para reducir\n"
+                      "la latencia de entrada. Se aplica al instante si el juego arrancó con Reflex activado; si no,\n"
+                      "reinicia tras activarlo.");
+                if (g_settings.reflex != 0 && !reflex_available()) ImGui::TextDisabled("%s", reflex_status());
+            }
             if (ImGui::Button(g_settings.ui_lang ? "Restore graphics" : "Restaurar gráficos")) {
                 xcde_quality_apply(&g_settings,QUALITY_BALANCED); quality_before=g_settings;
                 g_settings.graphics = GraphicsOptions{}; xcde_graphics_publish(&g_settings.graphics);  // (all choices to Original)

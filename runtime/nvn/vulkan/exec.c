@@ -29,6 +29,7 @@
 #include "bloom_prefilter.h"  // [XCDE] T-BLOOM-PREFILTER
 #include "bloom.h"  // [XCDE] T-WATER-BLOOM
 #include "temporal.h"
+#include "reflex.h"  // [XCDE] T272: the present's game frame for Reflex markers
 void vk_watch(VkImage dst, const char *site);  // [XCDE] debugging: log writes to a watched image
 static VkImage g_watch_img;
 #include "../renderer.h"
@@ -8752,7 +8753,7 @@ static void exec_list(uint64_t handle, int depth) {
 // first waits for the worker to have run the job that set it (tickets; fences inside lists are found when the list is
 // queued). At most 2 presents queued (the game can't run further ahead). Off in deterministic runs and with
 // XCDE_ASYNC_RENDER=0.
-typedef struct { int kind; uint64_t a, result_seq; } RJob;
+typedef struct { int kind; uint64_t a, result_seq, frame; } RJob;
 enum { RJ_EXEC, RJ_PRESENT, RJ_FENCE, RJ_DESTROY };
 #define RQ_N 4096
 static RJob rq[RQ_N];
@@ -8826,7 +8827,9 @@ static void *rq_worker(void *arg) {
         switch (j.kind) {
         case RJ_EXEC: backend_execute(j.a); break;
         case RJ_PRESENT:
+            reflex_set_present_frame(j.frame);  // [XCDE] T272: the present markers use this game frame's token
             backend_present((NvnTexture *)(uintptr_t)j.a);
+            reflex_clear_present_frame();
             if (j.result_seq) { renderer_submit(); *(uint64_t *)(uintptr_t)j.result_seq = renderer_fence_seq(); }
             break;
         case RJ_FENCE: { extern void nvn_sync_set_seq(uint64_t guest, uint64_t seq); nvn_sync_set_seq(j.a, renderer_fence_seq()); break; }
@@ -8879,11 +8882,11 @@ bool backend_async(void) {
 }
 
 static void scan_fences(uint64_t handle, uint64_t ticket, int depth);
-static uint64_t rq_push_result(int kind, uint64_t a, uint64_t result_seq) {
+static uint64_t rq_push_result(int kind, uint64_t a, uint64_t result_seq, uint64_t frame) {
     pthread_mutex_lock(&rq_lock);
     while (rq_tail - rq_head >= RQ_N || (kind == RJ_PRESENT && rq_presents >= 2)) pthread_cond_wait(&rq_done_cv, &rq_lock);
     if (kind == RJ_EXEC) scan_fences(a, rq_tail + 1, 0);  // (under the lock: its syncs carry this job's ticket before anyone waits)
-    rq[rq_tail % RQ_N] = (RJob){kind, a, result_seq};
+    rq[rq_tail % RQ_N] = (RJob){kind, a, result_seq, frame};
     uint64_t ticket = ++rq_tail;
     if (kind == RJ_PRESENT) rq_presents++;
     pthread_cond_signal(&rq_cv);
@@ -8891,13 +8894,17 @@ static uint64_t rq_push_result(int kind, uint64_t a, uint64_t result_seq) {
     return ticket;
 }
 
-static uint64_t rq_push(int kind, uint64_t a) { return rq_push_result(kind, a, 0); }
-uint64_t backend_queue_present_fenced(NvnTexture *t, uint64_t *seq) {
-    return rq_push_result(RJ_PRESENT, (uint64_t)(uintptr_t)t, (uint64_t)(uintptr_t)seq);
+static uint64_t rq_push(int kind, uint64_t a) { return rq_push_result(kind, a, 0, 0); }
+uint64_t backend_queue_present_fenced(NvnTexture *t, uint64_t *seq, uint64_t frame) {
+    return rq_push_result(RJ_PRESENT, (uint64_t)(uintptr_t)t, (uint64_t)(uintptr_t)seq, frame);
 }
 
-uint64_t backend_present_fenced_sync(NvnTexture *t) {
-    backend_present(t); renderer_submit(); return renderer_fence_seq();
+uint64_t backend_present_fenced_sync(NvnTexture *t, uint64_t frame) {
+    reflex_set_present_frame(frame);  // [XCDE] T272
+    backend_present(t);
+    reflex_clear_present_frame();
+    renderer_submit();
+    return renderer_fence_seq();
 }
 
 // [XCDE] T240 (diag/watchdog.c): the worker's state in a stall report - no locks (the stall may be inside one)

@@ -5,6 +5,7 @@
 
 #include "../kernel.h"
 #include "nvn.h"
+#include "vulkan/reflex.h"  // [XCDE] T272: Reflex markers around the game's present
 #include "../settings.h"
 #include "../env_cache.h"  // (last: cached getenv)
 
@@ -908,10 +909,14 @@ NVN(nvnQueuePresentTexture) {
     extern void backend_queue_present(NvnTexture *t);
     if (i >= 0 && i < w->num) {
 #ifdef _WIN32
-        extern uint64_t backend_queue_present_fenced(NvnTexture *t, uint64_t *seq);
-        extern uint64_t backend_present_fenced_sync(NvnTexture *t);
-        if (backend_async()) w->reuse[i].ticket = backend_queue_present_fenced(HOST(NvnTexture, w->textures[i]), &w->reuse[i].seq);
-        else w->reuse[i].seq = backend_present_fenced_sync(HOST(NvnTexture, w->textures[i]));
+        extern uint64_t backend_queue_present_fenced(NvnTexture *t, uint64_t *seq, uint64_t frame);
+        extern uint64_t backend_present_fenced_sync(NvnTexture *t, uint64_t frame);
+        // [XCDE] T272: the game has finished simulating and submitting this frame; the present itself is marked by the
+        // render worker / the sync path (device.c vk_frame_end) with the same frame token.
+        uint64_t rf = reflex_current_frame();
+        if (rf) { reflex_marker(REFLEX_SIM_END); reflex_marker(REFLEX_SUBMIT_START); }
+        if (backend_async()) w->reuse[i].ticket = backend_queue_present_fenced(HOST(NvnTexture, w->textures[i]), &w->reuse[i].seq, rf);
+        else w->reuse[i].seq = backend_present_fenced_sync(HOST(NvnTexture, w->textures[i]), rf);
 #else
         if (backend_async()) backend_queue_present(HOST(NvnTexture, w->textures[i])); else backend_present(HOST(NvnTexture, w->textures[i]));
 #endif
