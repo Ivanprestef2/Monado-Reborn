@@ -61,6 +61,24 @@ normal close saves the cache, and the project's precompile step can start warm; 
 considering `reflex = on` by default. No latency gain is claimed: the Reflex verification HUD / FrameView is
 missing.
 
+### Normal-launch measurement (20:40)
+
+Normal visible launches (FIFO window, `fsr3`, `run_speed = 2.00`, same settings) were repeated and killed after
+20 s (warm cache) or 45 s (pipeline cache file deleted, driver cache warm), comparing `reflex = on` and `off`:
+
+| Launch | Frame 8 | Prewarm | `[stall] no frame` | Rate at the end |
+|---|---|---|---|---|
+| warm, Reflex on | t=6.1 s | 1471 ms (2112 builds) | 0 | 579 frames/18.1 s (53.1 fps) |
+| warm, Reflex off | t=6.0 s | 1478 ms (2110 builds) | 0 | 596 frames/18.1 s (56.3 fps) |
+| cold, Reflex on | t=6.7 s | 1802 ms (2111 builds) | 0 | 1972 frames/42.9 s (58.4 fps) |
+| cold, Reflex off | t=6.7 s | 1836 ms (2112 builds) | 0 | 1968 frames/42.8 s (58.7 fps) |
+
+"Cold" deleted `cache/vk_pipelines.bin` (the driver cache and `variants.bin` remained); the user's warm cache was
+restored afterwards. **The 3 stalls of 5-8 s from the hidden runs did not reproduce**: normal startup is the same
+with Reflex on and off (< 0.1 s to frame 8, within noise; the final FPS depends on the scene). The startup anomaly
+is therefore a hidden-harness/forced-exit or very-cold-driver-cache artifact, not a Reflex regression in normal
+play. A first-ever launch on a machine with no driver cache was not tested.
+
 ## Close (20:00): startup crash with Reflex and fix
 
 The first real launcher start with `reflex = on` (`upscaler = fsr3`, `run_speed = 2.00`, `party_switch = 0`,
@@ -103,6 +121,16 @@ calls follow.
 
 Validation: rebuilt and linked (`build/xcde.exe`, 20:22); a direct `WM_CLOSE` run produced no new crash report
 (0 reports) and the process terminated. Confirmed by the user's normal launch and X close: no report.
+
+## Next: Reflex verification HUD (needs administrator)
+
+The SDK zip (`streamline-sdk-v2.14.16.zip`, downloaded by the user) contains `utils/reflex/`:
+`ReflexTestEnable.exe`, `ReflexTest.exe`, `PrintPCL.exe` and `FVSDKSetup.exe`. `utils/reflex` was extracted to
+`build/reflex_probe/reflex_utils/` (ignored). `ReflexTestEnable.exe 1` answers **"Please run with elevated/admin
+privileges"**: it still has to be run from an administrator console, then restart the game and check the HUD for
+`App Called Sleep = 1`, the Reflex mode and non-zero timestamps/PCL in the three configurations (60 V-Sync,
+120/mailbox, 30 with repeated presents). If the HUD does not appear, add the game to the NVIDIA Control Panel
+profile (3D → Program Settings). The FrameView SDK (`FVSDKSetup.exe`) is only needed for the full PCL test.
 
 ## Limits
 

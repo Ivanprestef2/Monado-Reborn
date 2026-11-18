@@ -241,6 +241,11 @@ reflex_marker(t, ePresentEnd);
    precompile step can warm it, so the cost in normal play must be measured before deciding whether Reflex can be
    default-on. If it remains, options are to defer Streamline loading until the device/swapchain actually needs it
    (hard with manual hooking) or to scan a feature-specific plugin directory.
+   **Normal-launch follow-up:** visible launches with the user's settings were measured on/off with a warm cache and
+   with `cache/vk_pipelines.bin` deleted (driver cache warm), killing at 20/45 s. Frame 8 took 6.0-6.7 s, the
+   prewarm holds were ~1.5-1.8 s and there were **no** `[stall] no frame` reports in any of the four runs; the 5-8 s
+   stalls were a hidden-harness/forced-exit or very-cold-driver-cache artifact, not a Reflex regression in normal
+   play. A first-ever run with no driver shader cache was not tested.
    A real launcher run with `reflex = on` (1920x1080, V-Sync, `upscaler = fsr3`, `run_speed = 2.00`) crashed at
    frame 8 during this stall, in the run-speed path: `fill_state` -> `party_game_tick` -> `run_speed_leader` ->
    `field_group` -> guest `f_7000593120`, which reads `(*(pm)+0x680)+0xda8` without a null check. While the field
@@ -311,10 +316,11 @@ Validation state (2026-11-18):
 - Native settings round-trip passes with the new key; `tests/unit/test_reflex_contracts.py` (4/4) and
   `tests/unit/test_install_dlss.py` (5/5) pass; `tools/validate_port.py` compiles every runtime/UI source (5 native
   tests are not linkable here because this environment's MSYS2 lacks `libwinpthread.dll.a`).
-- **Not measured:** input-to-photon latency / PCL with the Reflex verification HUD or FrameView, gameplay (the runs
-  stop at the title screen), and DLSS + Reflex together (no RTX on this PC). Until then the feature stays `off` by
-  default and this document does not claim a latency gain. `XCDE_REFLEX_NOSLEEP=1` and `XCDE_REFLEX=0/1/2` are the
-  A/B switches used above; the first is diagnostic only.
+- **Not measured:** input-to-photon latency / PCL with the Reflex verification HUD or FrameView (the SDK's
+  `ReflexTestEnable.exe` HUD tool is extracted but needs an elevated console), gameplay (the runs stop at the title
+  screen), and DLSS + Reflex together (no RTX on this PC). Until then the feature stays `off` by default and this
+  document does not claim a latency gain. `XCDE_REFLEX_NOSLEEP=1` and `XCDE_REFLEX=0/1/2` are the A/B switches used
+  above; the first is diagnostic only.
 - **Startup crash (fixed):** the first real launcher run with `reflex = on` crashed at frame 8 in the run-speed path
   (`f_7000593120+0xb0`, read of `0xda8`) because the longer Streamline startup let the party scanner find the field
   object before its `+0x680` link existed. `field_group` (`runtime/hle/party.c`) now defers the guest call until the

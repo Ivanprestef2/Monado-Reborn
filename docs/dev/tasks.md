@@ -1568,7 +1568,7 @@ Detalle: `docs/PERFORMANCE_UI.md`. Evidencia: `docs/evidence/performance_ui_2026
   `reflex.h`, `framepace.c`, `objects.c`, `exec.c`, `device.c`, ajuste en `settings.h`/`settings_ini.c`/launcher/F1 y
   despliegue de DLLs. Compila, enlaza y arranca en el juego real; `[reflex] frame loop active` con Reflex + PCL y
   DLLs firmadas (GTX 1050 Ti, driver 582.78). Evidencia: `docs/evidence/reflex_impl_2026-11-18.md`. Pendiente para
-  cerrar: medición con la HUD de verificación/FrameView, gameplay (los runs fueron solo pantalla de título) y la
+  cerrar: medición con la HUD de verificación/FrameView (herramientas del zip extraídas; `ReflexTestEnable.exe 1` pide administrador), gameplay (los runs fueron solo pantalla de título) y la
   anomalía de arranque con Streamline cargado (vigilada en la evidencia; no es el sleep ni el proxy).
   **Cierre 20:00:** el primer arranque real con `reflex = on` chocó en `f_7000593120+0xb0` (lectura `0xda8`) desde
   `run_speed_leader`/`field_group`; era la carrera del objeto de campo a medio enlazar, agrandada por el stall de
@@ -1578,9 +1578,16 @@ Detalle: `docs/PERFORMANCE_UI.md`. Evidencia: `docs/evidence/performance_ui_2026
   la X tras 2409 frames; `slShutdown` descargaba los plugins con un hilo de NGX/DLSS aún dentro. `dlss_shutdown` ya
   no llama a `slShutdown` al salir; un `WM_CLOSE` directo no generó informe nuevo. **Confirmado por el usuario:**
   el arranque normal y el cierre con la X ya no generan informe.
+  **Medición de arranque (20:40):** lanzamientos visibles normales con los ajustes del usuario, caché caliente y
+  caché de pipelines borrada (driver caliente), `reflex = on` vs `off`: frame 8 a 6.0-6.7 s, prewarm 1.5-1.8 s,
+  **0** avisos `[stall] no frame` y mismo ritmo (~53-58 fps); no se reproducen las 3 paradas de 5-8 s del arnés
+  oculto. La anomalía de arranque queda como artefacto del arnés/caché del driver muy fría, no como regresión de
+  Reflex.
   **English summary (2026-11-18):** opt-in Reflex is implemented (`reflex = off` by default; Streamline runtime
   shared with DLSS, per-frame token, PCL markers, `slReflexSleep`, launcher/F1, DLL deployment). It compiles, links
   and runs in the game (`[reflex] frame loop active`). The startup crash in the run-speed `field_group` lookup and
-  the X-close teardown crash in `sl.dlss` are fixed. Remaining: latency measurement with the Reflex verification
-  HUD/FrameView, gameplay, and the Streamline startup-cost anomaly. Evidence (Spanish/English):
+  the X-close teardown crash in `sl.dlss` are fixed. Normal-launch measurements (warm and cold pipeline cache,
+  Reflex on/off) show frame 8 at 6.0-6.7 s, prewarm 1.5-1.8 s, no `[stall]`, and ~53-58 fps: the hidden-harness
+  stall did not reproduce. Remaining: latency measurement with the Reflex verification HUD/FrameView (the HUD tool needs an elevated console), gameplay, and
+  a first-ever run with no driver shader cache. Evidence (Spanish/English):
   `docs/evidence/reflex_impl_2026-11-18.md` / `.en.md`.

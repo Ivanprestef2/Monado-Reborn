@@ -63,6 +63,26 @@ construir ~290 programas. En un cierre normal el juego guarda la caché, y el pa
 puede dejar el arranque caliente; hay que medirlo en un arranque normal antes de plantear `reflex = on` por defecto.
 No se declara la ganancia de latencia: falta la HUD de verificación de Reflex / FrameView.
 
+### Medición en arranque normal (20:40)
+
+Se repitieron lanzamientos visibles normales (ventana FIFO, `fsr3`, `run_speed = 2.00`, mismos ajustes), matando el
+proceso a los 20 s (caché caliente) o 45 s (caché de pipelines borrada, caché del driver caliente), y se comparó
+`reflex = on` con `reflex = off`:
+
+| Arranque | Frame 8 | Prewarm | `[stall] no frame` | Ritmo al final |
+|---|---|---|---|---|
+| caliente, Reflex on | t=6.1 s | 1471 ms (2112 builds) | 0 | 579 frames/18.1 s (53.1 fps) |
+| caliente, Reflex off | t=6.0 s | 1478 ms (2110 builds) | 0 | 596 frames/18.1 s (56.3 fps) |
+| frío, Reflex on | t=6.7 s | 1802 ms (2111 builds) | 0 | 1972 frames/42.9 s (58.4 fps) |
+| frío, Reflex off | t=6.7 s | 1836 ms (2112 builds) | 0 | 1968 frames/42.8 s (58.7 fps) |
+
+El "frío" borró `cache/vk_pipelines.bin` (la caché del driver y `variants.bin` seguían); se restauró la caché
+caliente del usuario al terminar. **No se reprodujeron las 3 paradas de 5-8 s de los runs ocultos**: el arranque
+normal es igual con Reflex on y off (diferencia < 0.1 s hasta el frame 8, dentro del ruido; el FPS final depende de
+la escena). La anomalía de arranque queda, por tanto, como artefacto del arnés oculto/salida forzada o de un estado
+de caché del driver muy frío, no como regresión de Reflex en juego normal. No se probó un primer arranque en una
+máquina sin caché de driver.
+
 ## Cierre (20:00): crash de arranque con Reflex y arreglo
 
 El primer arranque real desde el launcher con `reflex = on` (`upscaler = fsr3`, `run_speed = 2.00`,
@@ -107,6 +127,16 @@ a Vulkan/Streamline después.
 Validación: reconstruido y enlazado (`build/xcde.exe`, 20:22); un cierre por `WM_CLOSE` directo no generó ningún
 informe nuevo (0 crash reports) y el proceso terminó. **Confirmado por el usuario:** el arranque normal y el cierre
 con la X ya no generan informe.
+
+## Siguiente: HUD de verificación de Reflex (requiere administrador)
+
+El zip del SDK (`streamline-sdk-v2.14.16.zip`, descargado por el usuario) trae `utils/reflex/`:
+`ReflexTestEnable.exe`, `ReflexTest.exe`, `PrintPCL.exe` y `FVSDKSetup.exe`. Se extrajo `utils/reflex` a
+`build/reflex_probe/reflex_utils/` (ignorado). `ReflexTestEnable.exe 1` responde **"Please run with
+elevated/admin privileges"**: queda ejecutarlo en una consola de administrador, reiniciar el juego y comprobar en
+el HUD `App Called Sleep = 1`, el modo de Reflex y los tiempos/PCL no nulos en las tres configuraciones (60 V-Sync,
+120/mailbox, 30 con presents repetidos). Si el HUD no aparece, el juego debe estar en el perfil de NVIDIA Control
+Panel (3D → Program Settings). El FrameView SDK (`FVSDKSetup.exe`) solo hace falta para el test completo de PCL.
 
 ## Límites
 
