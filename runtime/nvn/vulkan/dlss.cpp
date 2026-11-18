@@ -96,6 +96,8 @@ static std::atomic<uint64_t> g_game_frame{0};
 static std::atomic<uint64_t> g_present_frame{0};
 static std::atomic<int> g_reflex_pending{-1};  // a menu change: applied on the limiter thread (slReflexSetOptions is not thread safe)
 static uint32_t fallback_frame;  // DLSS-only token counter (when Reflex is not loaded)
+static std::atomic<uint64_t> g_pcl_markers{0};  // PCL markers the plugin accepted (XCDE_REFLEX_STATS)
+static uint64_t g_sleep_ok, g_sleep_fail;       // slReflexSleep results (limiter thread)
 
 static bool reflex_ready(void) {
     return reflex_ok && sl_surface_ready && p_slReflexSleep && p_slPCLSetMarker;
@@ -117,7 +119,7 @@ static sl::FrameToken *token_for(uint64_t frame) {
 static void marker_for(int which, uint64_t frame) {
     if (!p_slPCLSetMarker) return;
     sl::FrameToken *t = token_for(frame);
-    if (t) p_slPCLSetMarker((sl::PCLMarker)(unsigned)which, *t);
+    if (t && p_slPCLSetMarker((sl::PCLMarker)(unsigned)which, *t) == sl::Result::eOk) g_pcl_markers.fetch_add(1);
 }
 
 static void reflex_apply_mode(int mode) {
@@ -578,6 +580,31 @@ extern "C" void reflex_set_mode(int mode) {
     }
     g_reflex_pending.store(mode);  // the limiter thread applies it before the next sleep (same thread as the markers)
 }
+static void reflex_log_stats(uint64_t frame) {
+    static int enabled = -1;
+    if (enabled < 0) enabled = getenv("XCDE_REFLEX_STATS") ? 1 : 0;
+    if (!enabled || !p_slReflexGetState) return;
+    sl::ReflexState st{};
+    if (p_slReflexGetState(st) != sl::Result::eOk) return;
+    DLOG("[reflex] stats frame=%llu sleep_ok=%llu fail=%llu pcl_markers=%llu low=%d report=%d msg=%u\n",
+         (unsigned long long)frame, (unsigned long long)g_sleep_ok, (unsigned long long)g_sleep_fail,
+         (unsigned long long)g_pcl_markers.load(), (int)st.lowLatencyAvailable, (int)st.latencyReportAvailable,
+         st.statsWindowMessage);
+    const sl::ReflexReport *best = nullptr;
+    for (int i = 0; i < sl::kReflexFrameReportCount; i++)
+        if (st.frameReport[i].frameID && (!best || st.frameReport[i].frameID > best->frameID)) best = &st.frameReport[i];
+    if (best)
+        DLOG("[reflex] report frame=%llu input=%llu sim=%llu..%llu submit=%llu..%llu present=%llu..%llu "
+             "driver=%llu..%llu os=%llu..%llu gpu=%llu..%llu gpu_us=%u active_us=%u\n",
+             (unsigned long long)best->frameID, (unsigned long long)best->inputSampleTime,
+             (unsigned long long)best->simStartTime, (unsigned long long)best->simEndTime,
+             (unsigned long long)best->renderSubmitStartTime, (unsigned long long)best->renderSubmitEndTime,
+             (unsigned long long)best->presentStartTime, (unsigned long long)best->presentEndTime,
+             (unsigned long long)best->driverStartTime, (unsigned long long)best->driverEndTime,
+             (unsigned long long)best->osRenderQueueStartTime, (unsigned long long)best->osRenderQueueEndTime,
+             (unsigned long long)best->gpuRenderStartTime, (unsigned long long)best->gpuRenderEndTime,
+             best->gpuFrameTimeUs, best->gpuActiveRenderTimeUs);
+}
 extern "C" uint64_t reflex_frame_begin(void) {
     if (!reflex_ready()) return 0;
     int pending = g_reflex_pending.exchange(-1);
@@ -587,10 +614,12 @@ extern "C" uint64_t reflex_frame_begin(void) {
     if (!t) return 0;
     sl::Result sr = sl::Result::eOk;
     if (reflex_sleep_enabled()) sr = p_slReflexSleep(*t);  // the driver decides when the next frame may start
+    if (sr == sl::Result::eOk) g_sleep_ok++; else g_sleep_fail++;
     if (sr != sl::Result::eOk) {
         static int shown;
         if (shown++ < 10) DLOG("[streamline] slReflexSleep failed: %d\n", (int)sr);
     }
+    if ((frame % 120) == 1) reflex_log_stats(frame);
     static bool announced;
     if (!announced) {
         announced = true;

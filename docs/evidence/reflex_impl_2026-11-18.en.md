@@ -127,10 +127,28 @@ Validation: rebuilt and linked (`build/xcde.exe`, 20:22); a direct `WM_CLOSE` ru
 The SDK zip (`streamline-sdk-v2.14.16.zip`, downloaded by the user) contains `utils/reflex/`:
 `ReflexTestEnable.exe`, `ReflexTest.exe`, `PrintPCL.exe` and `FVSDKSetup.exe`. `utils/reflex` was extracted to
 `build/reflex_probe/reflex_utils/` (ignored). `ReflexTestEnable.exe 1` answers **"Please run with elevated/admin
-privileges"**: it still has to be run from an administrator console, then restart the game and check the HUD for
-`App Called Sleep = 1`, the Reflex mode and non-zero timestamps/PCL in the three configurations (60 V-Sync,
-120/mailbox, 30 with repeated presents). If the HUD does not appear, add the game to the NVIDIA Control Panel
-profile (3D → Program Settings). The FrameView SDK (`FVSDKSetup.exe`) is only needed for the full PCL test.
+privileges"**; run elevated it returns 0. `build/xcde.exe` was added to the NVIDIA Control Panel profile and both
+windowed and fullscreen were tried, but the HUD **does not appear in the desktop capture**.
+
+To avoid depending on the overlay, `XCDE_REFLEX_STATS=1` was added; it logs `slReflexGetState` every 120 frames.
+Result of a 12 s session (windowed, `fsr3`, Reflex on):
+
+```
+[reflex] stats frame=241 sleep_ok=241 fail=0 pcl_markers=1440 low=1 report=1 msg=49692
+[reflex] report frame=236 input=0 sim=... submit=... present=... driver=... os=... gpu=...
+           gpu_us=17011 active_us=2669
+```
+
+- `sleep_ok=241 fail=0`: `slReflexSleep` was called and returned `eOk` on **every** frame (the HUD's `App Called
+  Sleep` would be 1).
+- `pcl_markers=1440`: 6 markers per frame (simulation, submit and present, start/end) accepted by the plugin
+  (`eOk`); the HUD's PCL would not be 0.
+- `report=1`, `low=1`: a latency report is available and low latency is supported; driver/OS/GPU timestamps are
+  non-zero and `gpu_us ≈ 16.4-17.0 ms` at 60 FPS.
+- `input=0` because input sampling is not marked (an input marker would be needed; optional).
+- The `present` fields in this sample have start=end (zero-duration section on a loading frame); the other
+  sections have start<end. The real HUD and FrameView are still pending; if the overlay does not appear, NVIDIA's
+  next step is installing `FVSDKSetup.exe` (administrator, reboot) or using exclusive fullscreen.
 
 ## Limits
 

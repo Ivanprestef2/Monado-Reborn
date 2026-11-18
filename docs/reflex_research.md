@@ -320,7 +320,11 @@ Validation state (2026-11-18):
   `ReflexTestEnable.exe` HUD tool is extracted but needs an elevated console), gameplay (the runs stop at the title
   screen), and DLSS + Reflex together (no RTX on this PC). Until then the feature stays `off` by default and this
   document does not claim a latency gain. `XCDE_REFLEX_NOSLEEP=1` and `XCDE_REFLEX=0/1/2` are the A/B switches used
-  above; the first is diagnostic only.
+  above; the first is diagnostic only. `XCDE_REFLEX_STATS=1` logs `slReflexGetState` every 120 frames: a 12 s run
+  reported `sleep_ok=241 fail=0` (every frame), `pcl_markers=1440` (6/frame), `report=1 low=1` and non-zero
+  driver/OS/GPU timestamps (`gpu_us ≈ 16.4-17.0 ms`), so the sleep/marker/PCL report path is verified even though
+  the driver HUD overlay has not been made visible on this machine (the NVIDIA App Alt+R overlay is not installed;
+  the Reflex HUD tool needs FrameView or an elevated test setup).
 - **Startup crash (fixed):** the first real launcher run with `reflex = on` crashed at frame 8 in the run-speed path
   (`f_7000593120+0xb0`, read of `0xda8`) because the longer Streamline startup let the party scanner find the field
   object before its `+0x680` link existed. `field_group` (`runtime/hle/party.c`) now defers the guest call until the

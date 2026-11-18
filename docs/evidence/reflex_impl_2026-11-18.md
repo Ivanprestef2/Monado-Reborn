@@ -133,10 +133,28 @@ con la X ya no generan informe.
 El zip del SDK (`streamline-sdk-v2.14.16.zip`, descargado por el usuario) trae `utils/reflex/`:
 `ReflexTestEnable.exe`, `ReflexTest.exe`, `PrintPCL.exe` y `FVSDKSetup.exe`. Se extrajo `utils/reflex` a
 `build/reflex_probe/reflex_utils/` (ignorado). `ReflexTestEnable.exe 1` responde **"Please run with
-elevated/admin privileges"**: queda ejecutarlo en una consola de administrador, reiniciar el juego y comprobar en
-el HUD `App Called Sleep = 1`, el modo de Reflex y los tiempos/PCL no nulos en las tres configuraciones (60 V-Sync,
-120/mailbox, 30 con presents repetidos). Si el HUD no aparece, el juego debe estar en el perfil de NVIDIA Control
-Panel (3D → Program Settings). El FrameView SDK (`FVSDKSetup.exe`) solo hace falta para el test completo de PCL.
+elevated/admin privileges"**; ejecutado elevado devuelve 0. Se añadió `build/xcde.exe` al perfil de NVIDIA Control
+Panel y se probó ventana y fullscreen, pero el HUD **no aparece en la captura de escritorio**.
+
+Para no depender del overlay se añadió el diagnóstico `XCDE_REFLEX_STATS=1`, que registra `slReflexGetState` cada
+120 frames. Resultado de una sesión de 12 s (ventana, `fsr3`, Reflex on):
+
+```
+[reflex] stats frame=241 sleep_ok=241 fail=0 pcl_markers=1440 low=1 report=1 msg=49692
+[reflex] report frame=236 input=0 sim=... submit=... present=... driver=... os=... gpu=...
+           gpu_us=17011 active_us=2669
+```
+
+- `sleep_ok=241 fail=0`: `slReflexSleep` se llamó y devolvió `eOk` en **todos** los frames (el `App Called
+  Sleep` del HUD sería 1).
+- `pcl_markers=1440`: 6 marcadores por frame (simulación, submit y present, inicio/fin) aceptados por el plugin
+  (`eOk`); el `PCL` del HUD no sería 0.
+- `report=1`, `low=1`: hay informe de latencia y baja latencia disponible; los timestamps de driver/OS/GPU son no
+  nulos y `gpu_us ≈ 16.4-17.0 ms` a 60 FPS.
+- `input=0` porque no se marca el muestreo de entrada (haría falta un marcador de input; opcional).
+- El campo `present` de este ejemplo tiene inicio=fin (sección de duración cero en el frame de carga); el resto de
+  secciones tiene inicio<fin. El HUD real y FrameView siguen pendientes; si el overlay no aparece, el siguiente
+  paso de NVIDIA es instalar `FVSDKSetup.exe` (administrador, reinicio) o usar fullscreen exclusivo.
 
 ## Límites
 
