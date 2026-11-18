@@ -2,6 +2,9 @@
 #include "../../diag/diag.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
+#if defined(_WIN32)
+#include <SDL3/SDL_system.h>
+#endif
 #include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -1780,8 +1783,25 @@ void backend_clear_window(void) {
     if (g_vk.dev && vk_frame_begin(black)) vk_frame_end(NULL);
 }
 
+#if defined(_WIN32)
+static bool SDLCALL reflex_pcl_message(void *userdata, MSG *msg) {
+    (void)userdata;
+    uint32_t id = reflex_pcl_ping_message();
+    if (id && msg->message == id) {
+        reflex_pcl_ping();
+        return false;  // consumed: this is the driver's private PCL ping
+    }
+    return true;
+}
+#endif
+
 int ui_run(void) {
     ui_window_init();
+#if defined(_WIN32)
+    // [XCDE] T272: PCL ping. FrameView / the driver post PCLState.statsWindowMessage; answering it with
+    // ePCLatencyPing is what makes PCL a measured value instead of NA.
+    SDL_SetWindowsMessageHook(reflex_pcl_message, NULL);
+#endif
     atomic_store(&ui_ready, true);
     for (;;) {
         if (rt_reboot_requested()) return rt_reboot_requested();  // (runtime/main.c tears the game down)

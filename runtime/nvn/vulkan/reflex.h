@@ -37,6 +37,11 @@ void reflex_clear_present_frame(void);
 void reflex_present_marker(int marker);
 uint64_t reflex_present_frame_value(void);  // the present being executed (dlss.cpp's token lookup), 0 when none
 
+// PCL ping: the driver / FrameView sends PCLState.statsWindowMessage periodically; the Windows message hook in
+// device.c answers it with ePCLatencyPing for the next frame. Without this, PCL stays NA in FrameView/RTSS.
+uint32_t reflex_pcl_ping_message(void);  // 0 when PCL is not loaded
+void reflex_pcl_ping(void);
+
 #ifdef __cplusplus
 }
 #endif

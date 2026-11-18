@@ -56,6 +56,9 @@ Justificación en ADR 0011. Se conserva la atribución y no se incorpora código
 - `runtime/nvn/vulkan/dlss.cpp`: `dlss_shutdown` ya no llama a `slShutdown()` al salir del proceso; Streamline
   descargaba `sl.dlss`/`sl.common` con un hilo de NGX/DLSS aún dentro y el cierre con la X chocaba en código
   descargado (`crash_20261118_201438`). El runtime queda mapeado hasta que Windows lo reclama.
+- `runtime/nvn/vulkan/device.c` / `dlss.cpp`: hook de mensajes Windows para el ping de PCL Stats
+  (`PCLState.statsWindowMessage` → `ePCLatencyPing`, `reflex_pcl_ping`); sin él el PCL de FrameView/RTSS queda NA
+  aunque se haga clic. Los marcadores de simulación/submit/present no cambian.
 - Pruebas: `tests/native/test_settings_roundtrip.c` (clave `reflex`), `tests/unit/test_reflex_contracts.py` (fuente) y
   `tests/unit/test_install_dlss.py` (DLLs). Investigación y límites: `docs/reflex_research.md` y
   `docs/evidence/reflex_2026-11-18*.md`.

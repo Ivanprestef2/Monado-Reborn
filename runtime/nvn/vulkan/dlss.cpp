@@ -83,6 +83,7 @@ static PFun_slReflexSetOptions *p_slReflexSetOptions;
 static PFun_slReflexSleep *p_slReflexSleep;
 static PFun_slPCLSetMarker *p_slPCLSetMarker;
 static PFun_slPCLSetOptions *p_slPCLSetOptions;
+static PFun_slPCLGetState *p_slPCLGetState;
 static PFN_vkGetDeviceProcAddr p_proxyDeviceProcAddr;
 static sl::FeatureRequirements req_dlss, req_reflex, req_pcl;
 
@@ -97,6 +98,8 @@ static std::atomic<uint64_t> g_present_frame{0};
 static std::atomic<int> g_reflex_pending{-1};  // a menu change: applied on the limiter thread (slReflexSetOptions is not thread safe)
 static uint32_t fallback_frame;  // DLSS-only token counter (when Reflex is not loaded)
 static std::atomic<uint64_t> g_pcl_markers{0};  // PCL markers the plugin accepted (XCDE_REFLEX_STATS)
+static std::atomic<uint64_t> g_pcl_pings{0};    // ePCLatencyPing messages answered (FrameView/RTSS)
+static std::atomic<uint32_t> g_pcl_ping_msg{0}; // PCLState.statsWindowMessage: FrameView/driver PCL ping
 static uint64_t g_sleep_ok, g_sleep_fail;       // slReflexSleep results (limiter thread)
 
 static bool reflex_ready(void) {
@@ -496,6 +499,9 @@ extern "C" void dlss_device_created(VkInstance inst, VkPhysicalDevice phys, VkDe
                 f = nullptr;
                 pcl = pcl && p_slGetFeatureFunction(sl::kFeaturePCL, "slPCLSetOptions", f) == sl::Result::eOk && f;
                 if (pcl) p_slPCLSetOptions = (PFun_slPCLSetOptions *)f;
+                f = nullptr;
+                pcl = pcl && p_slGetFeatureFunction(sl::kFeaturePCL, "slPCLGetState", f) == sl::Result::eOk && f;
+                if (pcl) p_slPCLGetState = (PFun_slPCLGetState *)f;
             } else {
                 req_pcl_ok = false;
             }
@@ -505,6 +511,11 @@ extern "C" void dlss_device_created(VkInstance inst, VkPhysicalDevice phys, VkDe
             } else {
                 sl::PCLOptions po{};
                 p_slPCLSetOptions(po);
+                sl::PCLState pst{};
+                if (p_slPCLGetState && p_slPCLGetState(pst) == sl::Result::eOk) {
+                    g_pcl_ping_msg.store(pst.statsWindowMessage);
+                    DLOG("[reflex] PCL ping message %u\n", pst.statsWindowMessage);
+                }
                 reflex_apply_mode(reflex_setting());
                 sl::ReflexState state{};
                 sl::Result sr = p_slReflexGetState(state);
@@ -586,10 +597,10 @@ static void reflex_log_stats(uint64_t frame) {
     if (!enabled || !p_slReflexGetState) return;
     sl::ReflexState st{};
     if (p_slReflexGetState(st) != sl::Result::eOk) return;
-    DLOG("[reflex] stats frame=%llu sleep_ok=%llu fail=%llu pcl_markers=%llu low=%d report=%d msg=%u\n",
+    DLOG("[reflex] stats frame=%llu sleep_ok=%llu fail=%llu pcl_markers=%llu pings=%llu low=%d report=%d msg=%u\n",
          (unsigned long long)frame, (unsigned long long)g_sleep_ok, (unsigned long long)g_sleep_fail,
-         (unsigned long long)g_pcl_markers.load(), (int)st.lowLatencyAvailable, (int)st.latencyReportAvailable,
-         st.statsWindowMessage);
+         (unsigned long long)g_pcl_markers.load(), (unsigned long long)g_pcl_pings.load(),
+         (int)st.lowLatencyAvailable, (int)st.latencyReportAvailable, st.statsWindowMessage);
     const sl::ReflexReport *best = nullptr;
     for (int i = 0; i < sl::kReflexFrameReportCount; i++)
         if (st.frameReport[i].frameID && (!best || st.frameReport[i].frameID > best->frameID)) best = &st.frameReport[i];
@@ -642,6 +653,19 @@ extern "C" void reflex_present_marker(int marker) {
     if (!frame) return;
     marker_for(marker, frame);
     if (marker == REFLEX_PRESENT_END) g_present_frame.store(0);  // repeat presents: no second set of markers
+}
+extern "C" uint32_t reflex_pcl_ping_message(void) { return g_pcl_ping_msg.load(); }
+extern "C" void reflex_pcl_ping(void) {
+    if (!sl_initialized || !sl_surface_ready || !p_slPCLSetMarker) return;
+    uint64_t frame = g_game_frame.load() + 1;  // the ping arrives before the simulation that picks up the input
+    sl::FrameToken *t = token_for(frame);
+    if (!t) return;
+    sl::Result r = p_slPCLSetMarker(sl::PCLMarker::ePCLatencyPing, *t);
+    if (r == sl::Result::eOk) { g_pcl_markers.fetch_add(1); g_pcl_pings.fetch_add(1); }
+    else {
+        static int shown;
+        if (shown++ < 10) DLOG("[reflex] PCL ping marker failed: %d\n", (int)r);
+    }
 }
 
 static sl::Resource tex(const TexBackend *b, VkImageUsageFlags usage) {
@@ -797,5 +821,7 @@ void reflex_set_present_frame(uint64_t frame) { (void)frame; }
 void reflex_clear_present_frame(void) {}
 void reflex_present_marker(int marker) { (void)marker; }
 uint64_t reflex_present_frame_value(void) { return 0; }
+uint32_t reflex_pcl_ping_message(void) { return 0; }
+void reflex_pcl_ping(void) {}
 }
 #endif  // _WIN32

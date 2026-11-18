@@ -1590,11 +1590,15 @@ Detalle: `docs/PERFORMANCE_UI.md`. Evidencia: `docs/evidence/performance_ui_2026
   repitió el test mode, y se probó ventana/fullscreen, V-Sync on/off, fullscreen exclusivo (intento revertido) y
   `ReflexTest.exe curve`: **el HUD nunca se renderizó** (Vulkan + manual hooking, build sin firmar). La aceptación se
   cierra con la verificación del SDK; el HUD visual queda pendiente para un build firmado/D3D o la NVIDIA App.
+  **PCL (21:45):** el PCL NA era porque nadie contestaba `PCLState.statsWindowMessage`; se añadió el hook de mensajes
+  Windows + `ePCLatencyPing` (`device.c`, `reflex_pcl_ping`). El usuario confirma que el PCL aparece tras un clic
+  (p. ej. 68.75 ms); los clics sintéticos de la automatización no siempre llegan a SDL. La matriz de 3
+  configuraciones queda pendiente; el HUD overlay del driver sigue sin renderizarse.
   **English summary (2026-11-18):** opt-in Reflex is implemented (`reflex = off` by default; Streamline runtime
   shared with DLSS, per-frame token, PCL markers, `slReflexSleep`, launcher/F1, DLL deployment). It compiles, links
   and runs in the game (`[reflex] frame loop active`). The startup crash in the run-speed `field_group` lookup and
   the X-close teardown crash in `sl.dlss` are fixed. Normal-launch measurements (warm and cold pipeline cache,
   Reflex on/off) show frame 8 at 6.0-6.7 s, prewarm 1.5-1.8 s, no `[stall]`, and ~53-58 fps: the hidden-harness
-  stall did not reproduce. `XCDE_REFLEX_STATS=1` verifies the SDK report: sleep_ok=241 fail=0, 1440 PCL markers at frame 241, latency report available and gpu_us ~16.4-17.0 ms. The Reflex HUD overlay never rendered here (FrameView installed, FvSvc running, test mode enabled, NVIDIA profile added, windowed/fullscreen and an exclusive attempt, ReflexTest framework); the SDK report is the verification. Remaining: a signed/D3D or NVIDIA App HUD check, gameplay, and
+  stall did not reproduce. `XCDE_REFLEX_STATS=1` verifies the SDK report: sleep_ok=241 fail=0, 1440 PCL markers at frame 241, latency report available and gpu_us ~16.4-17.0 ms. PCL works after a real click: device.c answers the driver's PCLState.statsWindowMessage with ePCLatencyPing (reflex_pcl_ping), and XCDE_REFLEX_STATS logs pings=1-2 after a click; synthetic automation clicks do not register. The Reflex HUD overlay never rendered here (FrameView installed, FvSvc running, test mode enabled, NVIDIA profile added, windowed/fullscreen and an exclusive attempt, ReflexTest framework); the SDK report is the verification. Remaining: the 3-config PCL matrix, a signed/D3D or NVIDIA App HUD check, gameplay, and
   a first-ever run with no driver shader cache. Evidence (Spanish/English):
   `docs/evidence/reflex_impl_2026-11-18.md` / `.en.md`.

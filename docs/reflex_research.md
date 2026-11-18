@@ -316,8 +316,8 @@ Validation state (2026-11-18):
 - Native settings round-trip passes with the new key; `tests/unit/test_reflex_contracts.py` (4/4) and
   `tests/unit/test_install_dlss.py` (5/5) pass; `tools/validate_port.py` compiles every runtime/UI source (5 native
   tests are not linkable here because this environment's MSYS2 lacks `libwinpthread.dll.a`).
-- **Not measured:** input-to-photon latency / PCL with the Reflex verification HUD or FrameView (the SDK's
-  `ReflexTestEnable.exe` HUD tool is extracted but needs an elevated console), gameplay (the runs stop at the title
+- **Not measured:** the input-to-photon latency number with the Reflex verification HUD or FrameView (PCL itself
+  now works after a click; the HUD overlay does not render on this setup), gameplay (the runs stop at the title
   screen), and DLSS + Reflex together (no RTX on this PC). Until then the feature stays `off` by default and this
   document does not claim a latency gain. `XCDE_REFLEX_NOSLEEP=1` and `XCDE_REFLEX=0/1/2` are the A/B switches used
   above; the first is diagnostic only. `XCDE_REFLEX_STATS=1` logs `slReflexGetState` every 120 frames: a 12 s run
@@ -325,7 +325,9 @@ Validation state (2026-11-18):
   driver/OS/GPU timestamps (`gpu_us ≈ 16.4-17.0 ms`), so the sleep/marker/PCL report path is verified. The driver HUD overlay never rendered on this machine after
   FrameView SDK install + `FvSvc` start, test mode, the NVIDIA profile, a windowed/fullscreen/exclusive attempt and
   the ReflexTest framework — likely a Vulkan/manual-hooking/unsigned-build limitation; the SDK report is the
-  verification used here.
+  verification used here. PCL was NA until the app answered `PCLState.statsWindowMessage`: `device.c` now hooks it
+  and calls `ePCLatencyPing` for the next frame (`reflex_pcl_ping`); a real click triggers it (`pings=1-2` in
+  `XCDE_REFLEX_STATS`) and the user sees PCL, while synthetic automation clicks do not register with SDL.
 - **Startup crash (fixed):** the first real launcher run with `reflex = on` crashed at frame 8 in the run-speed path
   (`f_7000593120+0xb0`, read of `0xda8`) because the longer Streamline startup let the party scanner find the field
   object before its `+0x680` link existed. `field_group` (`runtime/hle/party.c`) now defers the guest call until the
