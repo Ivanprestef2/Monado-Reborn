@@ -249,11 +249,18 @@ static int g_in_init;
 static bool g_input_ms;
 static uint64_t g_input_origin;
 static bool g_input_origin_set;
+static uint64_t g_route_offset_frames, g_route_offset_ms;
 
 static void input_open(void) {
     if (g_in_init) return;
     g_in_init = 1;
     g_input_ms = env_flag("XCDE_INPUT_TIME");
+    const char *of = getenv("XCDE_ROUTE_OFFSET_FRAMES"), *om = getenv("XCDE_ROUTE_OFFSET_MS");
+    if (of && *of) g_route_offset_frames = strtoull(of, NULL, 10);
+    if (om && *om) g_route_offset_ms = strtoull(om, NULL, 10);
+    if (g_route_offset_frames || g_route_offset_ms)
+        LOG("[diag] input replay offset: %llu frames / %llu ms\n", (unsigned long long)g_route_offset_frames,
+            (unsigned long long)g_route_offset_ms);
     const char *rp = getenv("XCDE_INPUT_REPLAY"), *wp = getenv("XCDE_INPUT_RECORD");
     if (rp && *rp) {
         FILE *f = fopen(rp, "r");
@@ -293,7 +300,9 @@ void diag_input(uint64_t frame, uint64_t *b, int32_t *lx, int32_t *ly, int32_t *
     if (g_input_ms) {
         uint64_t now = kernel_det() ? kernel_vnow(0) : plat_now_ns();
         if (!g_input_origin_set) { g_input_origin = now; g_input_origin_set = true; }
-        frame = now >= g_input_origin ? (now - g_input_origin) / 1000000ull : 0;
+        frame = (now >= g_input_origin ? (now - g_input_origin) / 1000000ull : 0) + g_route_offset_ms;
+    } else {
+        frame += g_route_offset_frames;
     }
     if (g_replay_n) {  // the last event at or before this frame (events are sorted by frame)
         size_t lo = 0, hi = g_replay_n;

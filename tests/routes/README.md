@@ -12,3 +12,12 @@ Buttons: A=1 B=2 X=4 Y=8 L=0x40 R=0x80 ZL=0x100 ZR=0x200 Plus=0x400 Minus=0x800,
 
 `input_sample.txt` is a minimal example route (A, Plus and stick up on the title); it holds no game data. Routes that
 load a save (`load_*`, `save_a`, `menu_*`, `battle_*`) expect `DRIVE_SAVE=<folder with save_0/>`.
+
+## Slow loading
+
+A route's frame numbers assume the recording machine's loading time. Use `XCDE_ROUTE_OFFSET_FRAMES=<n>` (v1) or
+`XCDE_ROUTE_OFFSET_MS=<n>` (v2-ms) to delay every event without editing the route; the offset is added to the
+presented-frame/elapsed-ms clock before replay. Measure when the title/menu is actually ready first: a hidden 30 FPS
+run advances roughly twice the frames of a 60 FPS run, and prewarm can push the title past frame 8000 on a slow
+machine. On this PC, offsets of 900 and 3000 still landed before the title, so the 600/1000/1400/1800 load presses
+need a correspondingly larger offset (or a route that starts from gameplay).
