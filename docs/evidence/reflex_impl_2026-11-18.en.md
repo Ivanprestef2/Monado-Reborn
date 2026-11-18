@@ -156,12 +156,13 @@ never rendered** in this configuration (Vulkan + Streamline manual hooking, unsi
 underlying values are verified by `XCDE_REFLEX_STATS`. The visual HUD/FrameView remains pending for a signed/D3D
 build or the NVIDIA App; it does not block the integration or the markers.
 
-**PCL after the click:** the click alone is not enough for PCL Stats. The driver sends
-`PCLState.statsWindowMessage` (49691) and the application must answer it with `ePCLatencyPing`; that is what the
-Windows message hook in `device.c` does (`reflex_pcl_ping`). The stats show `pings=1-2` after a click, and the user
-confirms PCL appears when clicking (e.g. 68.75 ms). The automation's synthetic clicks do not reach SDL under the
-same conditions, which is why the automated captures still show NA. Without the handler the message is never
-answered and PCL stays NA.
+**PCL when focused/clicked:** the click alone is not enough for PCL Stats. The driver sends
+`PCLState.statsWindowMessage` (49691) when the window is foreground (or after a real click) and the application
+must answer it with `ePCLatencyPing`; that is what the Windows message hook in `device.c` does
+(`reflex_pcl_ping`). The stats show `pings=1-2` after a click, and the user confirms PCL appears on a click or
+when alt-tabbing the window to the foreground, even on the loading screen. The automation's synthetic clicks/focus
+do not count as real input to SDL, which is why the automated captures still show NA. Without the handler the
+message is never answered and PCL stays NA.
 
 ## Limits
 

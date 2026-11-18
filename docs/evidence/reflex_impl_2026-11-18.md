@@ -162,12 +162,13 @@ esta configuración (Vulkan + Streamline con *manual hooking*, ejecutable sin fi
 subyacentes están verificados por `XCDE_REFLEX_STATS`. El HUD/FrameView visual queda pendiente para un build
 firmado/D3D o con la NVIDIA App; no bloquea la integración ni los marcadores.
 
-**PCL tras el clic:** el clic no basta por sí solo para PCL Stats. El driver envía `PCLState.statsWindowMessage`
-(49691) y la aplicación debe contestar con `ePCLatencyPing`; eso hace el hook de mensajes Windows de `device.c`
-(`reflex_pcl_ping`). En los runs aparece `pings=1-2` después de un clic, y el usuario confirma que el PCL se
-muestra al hacer clic (p. ej. 68.75 ms). Los clics sintéticos de la automatización no llegan a SDL en la misma
-condición, por eso las capturas automáticas siguen mostrando NA. Sin el handler el mensaje queda sin respuesta y
-el PCL sigue NA.
+**PCL al enfocar/click:** el clic no basta por sí solo para PCL Stats. El driver envía
+`PCLState.statsWindowMessage` (49691) cuando la ventana está en primer plano (o tras un clic real) y la aplicación
+debe contestar con `ePCLatencyPing`; eso hace el hook de mensajes Windows de `device.c` (`reflex_pcl_ping`). En los
+runs aparece `pings=1-2` después de un clic, y el usuario confirma que el PCL se muestra al hacer clic o al pasar la
+ventana a primer plano (Alt-Tab), incluso en la pantalla de carga. Los clics/foco sintéticos de la automatización
+no cuentan como entrada real para SDL, por eso las capturas automáticas siguen mostrando NA. Sin el handler el
+mensaje queda sin respuesta y el PCL sigue NA.
 
 ## Límites
 
