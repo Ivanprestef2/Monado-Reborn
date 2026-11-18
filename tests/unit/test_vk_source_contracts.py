@@ -47,6 +47,19 @@ class VulkanSourceContracts(unittest.TestCase):
         self.assertIn("VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU", menu)
 
 
+    def test_vma_headroom_is_wired_and_the_callback_never_locks(self):
+        self.assertIn(".pDeviceMemoryCallbacks = vk_headroom_callbacks()", DEVICE)
+        self.assertIn("vk_headroom_start();", DEVICE)
+        self.assertIn("vk_headroom_stop();", DEVICE)
+        headroom = (ROOT / "runtime/nvn/vulkan/headroom.c").read_text(encoding="utf-8")
+        self.assertIn('getenv("XCDE_VRAM_HEADROOM")', headroom)
+        self.assertIn("vmaAllocateMemory(g_vk.vma, &req, &ai, &a, NULL)", headroom)
+        # The VMA allocation callback runs inside VMA's block allocation: taking H.lock there would deadlock
+        # against the headroom thread, which holds it around its own vmaAllocateMemory (the event must be lock-free).
+        callback = headroom[headroom.index("static void VKAPI_PTR on_allocate"):
+                            headroom.index("const VmaDeviceMemoryCallbacks")]
+        self.assertNotIn("pthread_mutex_lock", callback)
+
     def test_optional_feature_log_is_after_feature_struct_initialization(self):
         self.assertLess(DEVICE.index("VkPhysicalDeviceVulkan11Features f11 ="),
                         DEVICE.index("[vk] optional features:"))

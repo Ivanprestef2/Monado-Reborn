@@ -171,3 +171,8 @@ VkShaderModule vk_builtin_shader(const char *name);  // internal shaders (clear,
 
 // ---- device / window (device.c)
 void vk_save_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h);
+// VRAM headroom (headroom.c): the VMA callbacks that see new device memory, and the thread that allocates the next
+// block of each memory type in use ahead of the render thread.
+const VmaDeviceMemoryCallbacks *vk_headroom_callbacks(void);
+void vk_headroom_start(void);
+void vk_headroom_stop(void);   // before vmaDestroyAllocator

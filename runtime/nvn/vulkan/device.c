@@ -605,8 +605,10 @@ static void create_device(void) {
 
     VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys, .device = g_vk.dev, .instance = g_vk.inst,
                                  .vulkanApiVersion = g_vk.api_version > VK_API_VERSION_1_3 ? VK_API_VERSION_1_3 : g_vk.api_version,
-                                 .flags = budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0};
+                                 .flags = budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0,
+                                 .pDeviceMemoryCallbacks = vk_headroom_callbacks()};
     VK_CHECK(vmaCreateAllocator(&ai, &g_vk.vma));
+    vk_headroom_start();  // [XCDE] the next VMA block is made off the render thread (headroom.c)
 
     VkSemaphoreTypeCreateInfo st = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
                                     .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE, .initialValue = 0};
@@ -1676,6 +1678,7 @@ static void quick_exit_handler(void) {
         if (trace) LOG("[vk] exit: saving the pipeline cache\n");
         for (int i = 0; i < 500 && atomic_load(&pc_saving); i++) SDL_Delay(10);  // (a periodic save still writing)
         vk_pipeline_cache_save();
+        vk_headroom_stop();  // (joins the thread before the process ends)
     }
     if (trace) LOG("[vk] exit: terminating\n");
     fflush(stdout);
