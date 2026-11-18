@@ -183,6 +183,14 @@ la pantalla de título/carga (no de gameplay), el overlay es el de RTSS (el HUD 
 el FPS real no alcanza el objetivo de 120 en esta GPU; por eso **no** son una comparación de latencia ni una
 ganancia.
 
+### Log del proxy PCL (sin capturas)
+
+Con `XCDE_REFLEX_STATS=1` cada ping registra `PCL proxy frame=... ping_to_present=... ms` y cada 120 frames
+`PCL proxy summary n=... avg_ms=... min_ms=... max_ms=... outliers=...` (los >250 ms se excluyen y cuentan como
+outliers, para no mezclar stalls de carga). Sesión real con clic del usuario: **272 muestras, avg 23.13 ms,
+min 6.39, max 164.48, 4 outliers** (261.84, 425.71, 582.83, 1854.07). Es el tramo ping→present de la app, no el
+PCL ETW que muestra RTSS/FrameView; permite llevar la evidencia en `build/last_game.log` sin capturas.
+
 ## Límites
 
 - Los runs automatizados son de pantalla de título (240 frames) y no de gameplay; la sesión real del usuario

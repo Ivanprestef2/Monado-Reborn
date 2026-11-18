@@ -330,7 +330,10 @@ Validation state (2026-11-18):
   `XCDE_REFLEX_STATS`) and the user sees PCL when a click focuses the window or after alt-tabbing it to the
   foreground, while synthetic automation input/focus does not register with SDL. PCL matrix (title screen, RTSS):
   60 V-Sync **69.74 ms**, 120/mailbox **97.94 ms** (52 actual FPS), 30/repeated presents **68.02 ms**; all
-  non-zero, but these are loading-screen values, not gameplay, and not a latency comparison.
+  non-zero, but these are loading-screen values, not gameplay, and not a latency comparison. The app also logs the
+  same ping-to-present path with `XCDE_REFLEX_STATS=1` (per ping plus a periodic n/avg/min/max summary excluding
+  >250 ms outliers; a click run gave 272 samples, avg 23.13 ms, min 6.39, max 164.48). That is an app-side proxy,
+  not the ETW PCL shown by RTSS/FrameView, but it removes the need for screenshots.
 - **Startup crash (fixed):** the first real launcher run with `reflex = on` crashed at frame 8 in the run-speed path
   (`f_7000593120+0xb0`, read of `0xda8`) because the longer Streamline startup let the party scanner find the field
   object before its `+0x680` link existed. `field_group` (`runtime/hle/party.c`) now defers the guest call until the

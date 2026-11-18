@@ -13,6 +13,7 @@
 // inputs (colour, depth, motion vectors at render size; output at window size) and the evaluation into the command
 // buffer. Reflex: one Streamline frame token per game frame (shared with DLSS), PCL markers around simulation, render
 // submit and present, and slReflexSleep at the frame boundary (reflex.h, framepace.c, objects.c, device.c, exec.c).
+#include <chrono>
 #include <math.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -99,6 +100,19 @@ static std::atomic<int> g_reflex_pending{-1};  // a menu change: applied on the 
 static uint32_t fallback_frame;  // DLSS-only token counter (when Reflex is not loaded)
 static std::atomic<uint64_t> g_pcl_markers{0};  // PCL markers the plugin accepted (XCDE_REFLEX_STATS)
 static std::atomic<uint64_t> g_pcl_pings{0};    // ePCLatencyPing messages answered (FrameView/RTSS)
+static std::atomic<uint64_t> g_ping_frame[SL_TOKEN_RING] = {};  // PCL ping associated with this frame
+static std::atomic<uint64_t> g_ping_ns[SL_TOKEN_RING] = {};     // steady_clock timestamp of the ping
+static std::atomic<uint64_t> g_proxy_count{0}, g_proxy_sum_ns{0}, g_proxy_min_ns{UINT64_MAX}, g_proxy_max_ns{0};
+static std::atomic<uint64_t> g_proxy_outliers{0};
+static void pcl_proxy_add(uint64_t ns) {
+    if (ns > 250000000ull) { g_proxy_outliers.fetch_add(1); return; }  // loading/startup stalls, not PCL
+    g_proxy_count.fetch_add(1);
+    g_proxy_sum_ns.fetch_add(ns);
+    uint64_t v = g_proxy_min_ns.load();
+    while (ns < v && !g_proxy_min_ns.compare_exchange_weak(v, ns)) {}
+    v = g_proxy_max_ns.load();
+    while (ns > v && !g_proxy_max_ns.compare_exchange_weak(v, ns)) {}
+}
 static std::atomic<uint32_t> g_pcl_ping_msg{0}; // PCLState.statsWindowMessage: FrameView/driver PCL ping
 static uint64_t g_sleep_ok, g_sleep_fail;       // slReflexSleep results (limiter thread)
 
@@ -144,6 +158,11 @@ static int reflex_env_mode(void) {
     if (!e || !*e) return -1;
     int v = atoi(e);
     return v >= 2 ? REFLEX_BOOST : v >= 1 ? REFLEX_ON : REFLEX_OFF;
+}
+static bool pcl_proxy_logging(void) {
+    static int on = -1;  // XCDE_REFLEX_STATS=1: per-ping PCL proxy lines (the aggregate is gated with the stats)
+    if (on < 0) on = getenv("XCDE_REFLEX_STATS") ? 1 : 0;
+    return on != 0;
 }
 static bool reflex_sleep_enabled(void) {
     static int on = -1;  // XCDE_REFLEX_NOSLEEP=1: diagnostic A/B (markers + proxy stay on)
@@ -604,6 +623,13 @@ static void reflex_log_stats(uint64_t frame) {
     const sl::ReflexReport *best = nullptr;
     for (int i = 0; i < sl::kReflexFrameReportCount; i++)
         if (st.frameReport[i].frameID && (!best || st.frameReport[i].frameID > best->frameID)) best = &st.frameReport[i];
+    uint64_t pn = g_proxy_count.load();
+    if (pn) {
+        double avg = (double)g_proxy_sum_ns.load() / (double)pn / 1e6;
+        DLOG("[reflex] PCL proxy summary n=%llu avg_ms=%.2f min_ms=%.2f max_ms=%.2f outliers=%llu\n",
+             (unsigned long long)pn, avg, (double)g_proxy_min_ns.load() / 1e6, (double)g_proxy_max_ns.load() / 1e6,
+             (unsigned long long)g_proxy_outliers.load());
+    }
     if (best)
         DLOG("[reflex] report frame=%llu input=%llu sim=%llu..%llu submit=%llu..%llu present=%llu..%llu "
              "driver=%llu..%llu os=%llu..%llu gpu=%llu..%llu gpu_us=%u active_us=%u\n",
@@ -652,7 +678,21 @@ extern "C" void reflex_present_marker(int marker) {
     uint64_t frame = g_present_frame.load();
     if (!frame) return;
     marker_for(marker, frame);
-    if (marker == REFLEX_PRESENT_END) g_present_frame.store(0);  // repeat presents: no second set of markers
+    if (marker == REFLEX_PRESENT_END) {
+        size_t slot = (size_t)(frame % SL_TOKEN_RING);
+        if (g_ping_frame[slot].load() == frame) {
+            uint64_t ping = g_ping_ns[slot].load();
+            uint64_t now = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            g_ping_frame[slot].store(0);
+            uint64_t delta = now - ping;
+            pcl_proxy_add(delta);
+            if (pcl_proxy_logging())
+                DLOG("[reflex] PCL proxy frame=%llu ping_to_present=%.2f ms\n", (unsigned long long)frame,
+                    (double)delta / 1e6);
+        }
+        g_present_frame.store(0);  // repeat presents: no second set of markers
+    }
 }
 extern "C" uint32_t reflex_pcl_ping_message(void) { return g_pcl_ping_msg.load(); }
 extern "C" void reflex_pcl_ping(void) {
@@ -661,8 +701,14 @@ extern "C" void reflex_pcl_ping(void) {
     sl::FrameToken *t = token_for(frame);
     if (!t) return;
     sl::Result r = p_slPCLSetMarker(sl::PCLMarker::ePCLatencyPing, *t);
-    if (r == sl::Result::eOk) { g_pcl_markers.fetch_add(1); g_pcl_pings.fetch_add(1); }
-    else {
+    if (r == sl::Result::eOk) {
+        g_pcl_markers.fetch_add(1);
+        g_pcl_pings.fetch_add(1);
+        size_t slot = (size_t)(frame % SL_TOKEN_RING);
+        g_ping_ns[slot].store((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+        g_ping_frame[slot].store(frame);
+    } else {
         static int shown;
         if (shown++ < 10) DLOG("[reflex] PCL ping marker failed: %d\n", (int)r);
     }
