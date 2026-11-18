@@ -317,8 +317,8 @@ Validation state (2026-11-18):
   `tests/unit/test_install_dlss.py` (5/5) pass; `tools/validate_port.py` compiles every runtime/UI source (5 native
   tests are not linkable here because this environment's MSYS2 lacks `libwinpthread.dll.a`).
 - **Not measured:** the input-to-photon latency number with the Reflex verification HUD or FrameView (PCL itself
-  now works after a click; the HUD overlay does not render on this setup), gameplay (the runs stop at the title
-  screen), and DLSS + Reflex together (no RTX on this PC). Until then the feature stays `off` by default and this
+  now works after a click; the HUD overlay does not render on this setup), and DLSS + Reflex together (no RTX on
+  this PC). Until then the feature stays `off` by default and this
   document does not claim a latency gain. `XCDE_REFLEX_NOSLEEP=1` and `XCDE_REFLEX=0/1/2` are the A/B switches used
   above; the first is diagnostic only. `XCDE_REFLEX_STATS=1` logs `slReflexGetState` every 120 frames: a 12 s run
   reported `sleep_ok=241 fail=0` (every frame), `pcl_markers=1440` (6/frame), `report=1 low=1` and non-zero
@@ -334,6 +334,10 @@ Validation state (2026-11-18):
   same ping-to-present path with `XCDE_REFLEX_STATS=1` (per ping plus a periodic n/avg/min/max summary excluding
   >250 ms outliers; a click run gave 272 samples, avg 23.13 ms, min 6.39, max 164.48). That is an app-side proxy,
   not the ETW PCL shown by RTSS/FrameView, but it removes the need for screenshots.
+- **Gameplay (user, 22:50, V-Sync off):** save loaded from `save/save_0`; 2,709 frames in 71.9 s at a 60 FPS cap
+  (32.1 actual FPS on the GTX 1050 Ti), no crash or `[stall]`; `sleep_ok=2641/0`, 335 PCL pings, and an app proxy
+  of 321 samples, avg 31.25 ms (min 7.33, max 248.35, 1 outlier). Present mode mailbox; this is not a latency-gain
+  measurement.
 - **Startup crash (fixed):** the first real launcher run with `reflex = on` crashed at frame 8 in the run-speed path
   (`f_7000593120+0xb0`, read of `0xda8`) because the longer Streamline startup let the party scanner find the field
   object before its `+0x680` link existed. `field_group` (`runtime/hle/party.c`) now defers the guest call until the

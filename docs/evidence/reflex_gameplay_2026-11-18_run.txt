@@ -1,0 +1,14 @@
+# Extract from build/last_game.log — user gameplay run, 2026-11-18 22:50:57
+# Config: fps=60, reflex=on, upscaler=fsr3, window 1920x1080; V-Sync off (xcde.ini vsync=0, present mode mailbox).
+# Save loaded from save/save_0; no route. Full log kept at build/reflex_probe/last_game_user_2250.log.
+
+[vk] present mode mailbox
+[reflex] frame loop active (frame 1)
+[save] read save/save_0/bfssystem.sav off 0 size 48 -> guest 722e6f6c40
+[save] read save/save_0/bfsgame00.sav off 0 size 48 -> guest 720d60ac40
+[vk] t=5.3 frame 14 3.8 fps max 1641ms level  (25 draws, 0 skipped, 81 passes, 0 dispatches, 28 flushes, wait 8ms, compile 1518, fbcopy 0, upload 5.5MB, occlusion 0 (0 hidden), build waits 25 (0.7ms), prewarm 290 progs 0 pipes, gpl cached 0 linked 25 libs 3003 optimized 25, textures 201 MB (astc 0 MB), pipelines 25)
+[vk] t=71.9 frame 2709 32.1 fps max 37ms level  (133001 draws, 0 skipped, 21141 passes, 0 dispatches, 390 flushes, wait 1061ms, compile 0, fbcopy 260, upload 71.1MB, occlusion 3250 (715 hidden), build waits 0 (0.0ms), prewarm 738 progs 0 pipes, gpl cached 0 linked 0 libs 0 optimized 0, textures 458 MB (astc 0 MB), pipelines 1273)
+[reflex] stats frame=2641 sleep_ok=2641 fail=0 pcl_markers=16175 pings=335 low=1 report=1 msg=49691
+[reflex] PCL proxy summary n=321 avg_ms=31.25 min_ms=7.33 max_ms=248.35 outliers=1
+
+# No exception, no "[stall] no frame", no crash report for this session (latest crash file is from 20:14).
