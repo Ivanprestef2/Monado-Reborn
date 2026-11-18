@@ -1574,3 +1574,7 @@ Detalle: `docs/PERFORMANCE_UI.md`. Evidencia: `docs/evidence/performance_ui_2026
   `run_speed_leader`/`field_group`; era la carrera del objeto de campo a medio enlazar, agrandada por el stall de
   arranque de Streamline. Guard en `runtime/hle/party.c` (`+0x680` antes de la llamada al huésped), reconstruido y
   runs con los mismos ajustes sin crash. Sigue pendiente la medición de latencia.
+  **Cierre con la X (20:14):** `c0000005` de ejecución en `sl.dlss.dll+0x4ba50` (módulo ya descargado) al cerrar con
+  la X tras 2409 frames; `slShutdown` descargaba los plugins con un hilo de NGX/DLSS aún dentro. `dlss_shutdown` ya
+  no llama a `slShutdown` al salir; un `WM_CLOSE` directo no generó informe nuevo. Falta confirmarlo con el cierre
+  real desde el launcher.

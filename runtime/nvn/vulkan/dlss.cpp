@@ -51,7 +51,6 @@ static bool dlss_ok, reflex_ok;
 static bool reflex_checked;  // the device support check ran (a failure is not "restart to enable")
 static char dlss_note[256] = "No inicializado; se comprueba al iniciar";
 static char reflex_note[256] = "No inicializado; se comprueba al iniciar";
-static VkDevice sl_device;
 static PFN_vkGetInstanceProcAddr p_proxyInstanceProcAddr;
 static PFun_slShutdown *p_slShutdown;
 extern "C" const char *dlss_status(void) { return dlss_note; }
@@ -61,7 +60,10 @@ static void note_set(char *dst, const char *text) {
     DLOG("%s %s\n", dst == dlss_note ? "[dlss]" : "[reflex]", text);
 }
 static void dlss_shutdown(void) {
-    if (sl_initialized && p_slShutdown) { if (sl_device) vkDeviceWaitIdle(sl_device); p_slShutdown(); }
+    // [XCDE] T272: do NOT call slShutdown() at process exit. Streamline's teardown unloads sl.dlss/sl.common while
+    // its NGX/DLSS worker threads can still be executing them; closing the window then faults on the unloaded code
+    // (crash_20261118_201438: execute c0000005 at sl.dlss.dll+0x4ba50, host thread 0x2018, after 2409 frames). The
+    // process is exiting, so leave the runtime mapped and let Windows reclaim it.
     sl_initialized = sl_rt_ok = sl_surface_ready = false;
     req_dlss_ok = req_reflex_ok = req_pcl_ok = dlss_ok = reflex_ok = false;
     reflex_checked = false;
@@ -444,7 +446,6 @@ extern "C" void dlss_device_created(VkInstance inst, VkPhysicalDevice phys, VkDe
     info.graphicsQueueIndex = graphics_index;
     info.computeQueueFamily = qfam;
     info.computeQueueIndex = compute_index;
-    sl_device = dev;
     sl::Result r = p_slSetVulkanInfo(info);
     if (r != sl::Result::eOk) {
         snprintf(dlss_note, sizeof dlss_note, "No se pudo preparar Streamline en Vulkan (SDK %d)", (int)r);

@@ -319,6 +319,11 @@ Validation state (2026-11-18):
   object before its `+0x680` link existed. `field_group` (`runtime/hle/party.c`) now defers the guest call until the
   link is present; the same launcher/hidden configs run without the crash. This is a pre-existing timing race in the
   run-speed feature, exposed by the startup stall, not a Reflex API failure.
+- **Teardown crash (fixed):** closing the window with the X button while Reflex was on produced `c0000005` after
+  2409 frames. The minidump shows the address inside **unloaded** `sl.dlss.dll` (`+0x4ba50`): Streamline's
+  `slShutdown` unloads the plugins while an NGX/DLSS worker thread is still executing them. `dlss_shutdown` no
+  longer calls `slShutdown` at process exit; the runtime stays mapped until Windows reclaims it. A direct
+  `WM_CLOSE` run produced no new crash report.
 
 To try it on an NVIDIA machine: set `reflex = on` in `xcde.ini` (launcher or F1) and start the game; the log shows
 `[reflex] Reflex disponible ...` when the feature came up, `[reflex] frame loop active` once the limiter drives it,

@@ -81,9 +81,32 @@ Validación: reconstruido el runtime y enlazado; los mismos ajustes del usuario 
 comprobada es exactamente la lectura que falló en el dump. El coste de arranque con Streamline sigue abierto
 (sección anterior); este arreglo evita que se convierta en crash con `run_speed` activo.
 
+## Cierre con la X (20:14): crash de teardown y arreglo
 
+El usuario jugó una sesión real (2409 frames presentados) y cerró con la **X** de la ventana; el juego generó
+`crash/crash_20261118_201438.txt`:
 
-- Solo pantalla de título (240 frames), no gameplay ni rutas; una GPU; ventana oculta y presentación mailbox.
+- `c0000005` de **ejecución** en `0x7ff87e2aba50`, último frame 2409; el hilo que falla es el 0x2018 (host), no un
+  hilo de juego. El log termina en `window closed`.
+- El minidump lista `sl.dlss.dll` como **módulo descargado** (base `0x7ff87e260000`, tamaño `0x69000`); la
+  dirección que falla es `sl.dlss.dll+0x4ba50`. También están descargados `sl.reflex.dll`, `sl.pcl.dll` y
+  `sl.common.dll`, mientras `sl.interposer.dll` sigue cargado.
+- Causa: `slShutdown()` (llamado desde el `atexit` de `dlss_shutdown`) descarga los plugins mientras un hilo
+  trabajador de NGX/DLSS sigue ejecutando código de `sl.dlss`; al volver, el hilo salta a código ya descargado.
+  No es un fallo del juego ni de la partida: solo del camino de cierre ordenado. La X ejecuta
+  `ui_run` → `SDL_EVENT_QUIT` → `exit(0)` → `atexit`; el menú interno puede salir por otra vía.
+
+Arreglo: `dlss_shutdown` ya **no llama a `slShutdown()`** (ni a `vkDeviceWaitIdle`) al salir del proceso; deja el
+runtime mapeado y Windows lo reclama al terminar. Es seguro porque el proceso está saliendo y no quedan llamadas
+a Vulkan/Streamline después.
+
+Validación: reconstruido y enlazado (`build/xcde.exe`, 20:22); un cierre por `WM_CLOSE` directo no generó ningún
+informe nuevo (0 crash reports) y el proceso terminó. Queda la confirmación con el cierre real desde el launcher.
+
+## Límites
+
+- Los runs automatizados son de pantalla de título (240 frames) y no de gameplay; la sesión real del usuario
+  (2409 frames) no se midió con HUD ni FrameView.
 - No se midió PCL ni latencia de entrada; no hay RTX para probar DLSS + Reflex a la vez.
 - Los logs completos quedan en `build/reflex_probe/` (ignorados); el extracto saneado es
   [`reflex_impl_2026-11-18_run.txt`](reflex_impl_2026-11-18_run.txt).
