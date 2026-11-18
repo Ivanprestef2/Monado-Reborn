@@ -122,7 +122,7 @@ calls follow.
 Validation: rebuilt and linked (`build/xcde.exe`, 20:22); a direct `WM_CLOSE` run produced no new crash report
 (0 reports) and the process terminated. Confirmed by the user's normal launch and X close: no report.
 
-## Next: Reflex verification HUD (needs administrator)
+## Reflex verification HUD: not available on this setup
 
 The SDK zip (`streamline-sdk-v2.14.16.zip`, downloaded by the user) contains `utils/reflex/`:
 `ReflexTestEnable.exe`, `ReflexTest.exe`, `PrintPCL.exe` and `FVSDKSetup.exe`. `utils/reflex` was extracted to
@@ -147,8 +147,14 @@ Result of a 12 s session (windowed, `fsr3`, Reflex on):
   non-zero and `gpu_us ≈ 16.4-17.0 ms` at 60 FPS.
 - `input=0` because input sampling is not marked (an input marker would be needed; optional).
 - The `present` fields in this sample have start=end (zero-duration section on a loading frame); the other
-  sections have start<end. The real HUD and FrameView are still pending; if the overlay does not appear, NVIDIA's
-  next step is installing `FVSDKSetup.exe` (administrator, reboot) or using exclusive fullscreen.
+  sections have start<end.
+
+FrameView SDK (`FVSDKSetup.exe`) was installed and the PC restarted; the `FvSvc` service was stopped and was
+started; test mode was re-enabled, the game was added to the NVIDIA profile, windowed/fullscreen and V-Sync on/off
+were tried, an exclusive-fullscreen attempt was made (reverted), and `ReflexTest.exe curve` was launched. **The HUD
+never rendered** in this configuration (Vulkan + Streamline manual hooking, unsigned executable), even though the
+underlying values are verified by `XCDE_REFLEX_STATS`. The visual HUD/FrameView remains pending for a signed/D3D
+build or the NVIDIA App; it does not block the integration or the markers.
 
 ## Limits
 

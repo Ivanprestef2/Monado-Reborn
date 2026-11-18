@@ -1586,13 +1586,15 @@ Detalle: `docs/PERFORMANCE_UI.md`. Evidencia: `docs/evidence/performance_ui_2026
   **Verificación SDK (20:55):** `XCDE_REFLEX_STATS=1` registra `slReflexGetState`: `sleep_ok=241 fail=0`,
   `pcl_markers=1440` (6 por frame), `report=1 low=1`, timestamps de driver/OS/GPU no nulos y `gpu_us ≈ 16.4-17.0 ms`.
   El HUD de Reflex sigue sin aparecer (perfil de NVIDIA añadido, ventana y fullscreen); la superposición Alt+R no
-  existe en este equipo porque la NVIDIA App no está instalada. Queda instalar FrameView SDK (`FVSDKSetup.exe`,
-  admin + reinicio) o la NVIDIA App, o cerrar la aceptación con esta verificación del SDK.
+  existe en este equipo porque la NVIDIA App no está instalada. Se instaló FrameView SDK y se arrancó `FvSvc`, se
+  repitió el test mode, y se probó ventana/fullscreen, V-Sync on/off, fullscreen exclusivo (intento revertido) y
+  `ReflexTest.exe curve`: **el HUD nunca se renderizó** (Vulkan + manual hooking, build sin firmar). La aceptación se
+  cierra con la verificación del SDK; el HUD visual queda pendiente para un build firmado/D3D o la NVIDIA App.
   **English summary (2026-11-18):** opt-in Reflex is implemented (`reflex = off` by default; Streamline runtime
   shared with DLSS, per-frame token, PCL markers, `slReflexSleep`, launcher/F1, DLL deployment). It compiles, links
   and runs in the game (`[reflex] frame loop active`). The startup crash in the run-speed `field_group` lookup and
   the X-close teardown crash in `sl.dlss` are fixed. Normal-launch measurements (warm and cold pipeline cache,
   Reflex on/off) show frame 8 at 6.0-6.7 s, prewarm 1.5-1.8 s, no `[stall]`, and ~53-58 fps: the hidden-harness
-  stall did not reproduce. `XCDE_REFLEX_STATS=1` verifies the SDK report: sleep_ok=241 fail=0, 1440 PCL markers at frame 241, latency report available and gpu_us ~16.4-17.0 ms. Remaining: the Reflex HUD/FrameView overlay (the HUD tool needs an elevated console; the NVIDIA App Alt+R overlay is not installed here), gameplay, and
+  stall did not reproduce. `XCDE_REFLEX_STATS=1` verifies the SDK report: sleep_ok=241 fail=0, 1440 PCL markers at frame 241, latency report available and gpu_us ~16.4-17.0 ms. The Reflex HUD overlay never rendered here (FrameView installed, FvSvc running, test mode enabled, NVIDIA profile added, windowed/fullscreen and an exclusive attempt, ReflexTest framework); the SDK report is the verification. Remaining: a signed/D3D or NVIDIA App HUD check, gameplay, and
   a first-ever run with no driver shader cache. Evidence (Spanish/English):
   `docs/evidence/reflex_impl_2026-11-18.md` / `.en.md`.
