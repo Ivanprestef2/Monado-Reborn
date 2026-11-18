@@ -5,7 +5,8 @@ integration it already has, and what would it take? Sections 1-3 are the feasibi
 the opt-in implementation added on 2026-11-18 (no game files changed). The experiment behind the analysis is
 reproducible with `tools/reflex_probe.cpp`; the raw run is
 [`docs/evidence/reflex_2026-11-18_probe.txt`](evidence/reflex_2026-11-18_probe.txt) and the summary is
-[`docs/evidence/reflex_2026-11-18.md`](evidence/reflex_2026-11-18.md).
+[`docs/evidence/reflex_2026-11-18.md`](evidence/reflex_2026-11-18.md) (Spanish) /
+[`reflex_2026-11-18.en.md`](evidence/reflex_2026-11-18.en.md) (English).
 
 **Short answer: yes, the runtime path is proven end to end on the available PC (Vulkan extension, Streamline
 feature, sleep and latency reports), and it is now implemented as an opt-in (`reflex = off` by default), but the
@@ -235,7 +236,7 @@ reflex_marker(t, ePresentEnd);
    watchdog reports three 5-8 s stalls at frames 7-14, while the same run without Streamline reaches that point in
    5.5 s. It is **not** the Reflex sleep (`XCDE_REFLEX_NOSLEEP=1`), the swapchain proxy (diagnostic without the
    surface hooks) or the unrequested DLSS/NGX plugins (a Reflex-only plugin directory): it reproduces with
-   DLSS-only. See `docs/evidence/reflex_impl_2026-11-18.md`. The hidden runs exit with `_exit(0)`, so they never
+   DLSS-only. See `docs/evidence/reflex_impl_2026-11-18.md` / `.en.md`. The hidden runs exit with `_exit(0)`, so they never
    save `cache/vk_pipelines.bin` and rebuild ~290 programs every time; a normal quit saves it, and the project's
    precompile step can warm it, so the cost in normal play must be measured before deciding whether Reflex can be
    default-on. If it remains, options are to defer Streamline loading until the device/swapchain actually needs it
@@ -247,7 +248,7 @@ reflex_marker(t, ePresentEnd);
    longer Streamline startup widens that window. This is a pre-existing race in the run-speed lookup, not a
    Streamline/Reflex API error. It is fixed by a guard in `field_group` that defers the lookup until the link
    exists (`runtime/hle/party.c`); repeat runs with the same config pass, and the guard is exactly the read that
-   faulted. See `docs/evidence/reflex_impl_2026-11-18.md`.
+   faulted. See `docs/evidence/reflex_impl_2026-11-18.md` / `.en.md`.
 6. **Non-NVIDIA and hybrid.** `VK_NV_low_latency` does not exist on AMD/Intel; the option must be hidden or
    disabled and no extension may be added. On the Optimus/switchable-graphics path the selected adapter decides.
    `slIsFeatureSupported` remains the final check, not the vendor name.

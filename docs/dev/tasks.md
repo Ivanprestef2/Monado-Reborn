@@ -1576,5 +1576,11 @@ Detalle: `docs/PERFORMANCE_UI.md`. Evidencia: `docs/evidence/performance_ui_2026
   runs con los mismos ajustes sin crash. Sigue pendiente la medición de latencia.
   **Cierre con la X (20:14):** `c0000005` de ejecución en `sl.dlss.dll+0x4ba50` (módulo ya descargado) al cerrar con
   la X tras 2409 frames; `slShutdown` descargaba los plugins con un hilo de NGX/DLSS aún dentro. `dlss_shutdown` ya
-  no llama a `slShutdown` al salir; un `WM_CLOSE` directo no generó informe nuevo. Falta confirmarlo con el cierre
-  real desde el launcher.
+  no llama a `slShutdown` al salir; un `WM_CLOSE` directo no generó informe nuevo. **Confirmado por el usuario:**
+  el arranque normal y el cierre con la X ya no generan informe.
+  **English summary (2026-11-18):** opt-in Reflex is implemented (`reflex = off` by default; Streamline runtime
+  shared with DLSS, per-frame token, PCL markers, `slReflexSleep`, launcher/F1, DLL deployment). It compiles, links
+  and runs in the game (`[reflex] frame loop active`). The startup crash in the run-speed `field_group` lookup and
+  the X-close teardown crash in `sl.dlss` are fixed. Remaining: latency measurement with the Reflex verification
+  HUD/FrameView, gameplay, and the Streamline startup-cost anomaly. Evidence (Spanish/English):
+  `docs/evidence/reflex_impl_2026-11-18.md` / `.en.md`.

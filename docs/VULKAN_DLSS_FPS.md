@@ -30,6 +30,12 @@ la pestaña Gráficos del launcher y en el menú F1; si el juego arrancó con `r
 cargado, activarlo en F1 requiere reiniciar. `XCDE_REFLEX=0/1/2` lo fuerza para pruebas A/B. La ganancia a 60 FPS con
 V-Sync **no está medida**: ver `docs/reflex_research.md` y la HUD de verificación de Reflex.
 
+`reflex` (T272) is **opt-in and NVIDIA-only** (GeForce 900 or newer; no RTX required): `off` by default, `on` or
+`boost` enable low-latency Reflex when the GPU and driver support it (`VK_NV_low_latency`). It is available in the
+launcher's Graphics tab and the F1 menu; if the game started with `reflex = off` and Streamline was not loaded,
+enabling it in F1 needs a restart. `XCDE_REFLEX=0/1/2` forces it for A/B tests. The gain at 60 FPS with V-Sync
+**has not been measured**: see `docs/reflex_research.md` and the Reflex verification HUD.
+
 ## Runtime oficial NVIDIA instalado
 
 Fuente: [Streamline SDK 2.14.16, release de NVIDIA-RTX](https://github.com/NVIDIA-RTX/Streamline/releases/tag/v2.14.16), coincidente con las cabeceras del proyecto. Se descargó el SDK x64 de producción y se verificó su SHA-256:

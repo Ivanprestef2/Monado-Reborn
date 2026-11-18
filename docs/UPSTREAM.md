@@ -59,3 +59,14 @@ Justificación en ADR 0011. Se conserva la atribución y no se incorpora código
 - Pruebas: `tests/native/test_settings_roundtrip.c` (clave `reflex`), `tests/unit/test_reflex_contracts.py` (fuente) y
   `tests/unit/test_install_dlss.py` (DLLs). Investigación y límites: `docs/reflex_research.md` y
   `docs/evidence/reflex_2026-11-18*.md`.
+
+**English summary (T272).** Streamline is no longer DLSS-shaped: `dlss.cpp` loads the requested feature set
+(DLSS and/or Reflex + PCL), unions the Vulkan requirements and keeps independent capability flags; a shared
+8-slot per-frame token feeds the PCL markers, `slReflexSleep` and `dlss_evaluate`; `framepace.c`, `objects.c`,
+`exec.c` and `device.c` mark the frame sections and carry the present frame through the async worker. The setting
+`reflex = off | on | boost` (default off) is in `xcde.ini`, the launcher and F1, with `XCDE_REFLEX=0/1/2` for A/B.
+`sl.reflex.dll`, `sl.pcl.dll` and `NvLowLatencyVk.dll` ship with the NVIDIA runtime. `field_group` now defers the
+run-speed guest lookup until the field manager link exists (startup race exposed by the longer Streamline load),
+and `dlss_shutdown` no longer calls `slShutdown` at process exit (plugin unload raced an NGX worker; X-close
+crash). Tests and evidence: `tests/unit/test_reflex_contracts.py`, `docs/reflex_research.md`,
+`docs/evidence/reflex_impl_2026-11-18.md` (Spanish) and `.en.md` (English).

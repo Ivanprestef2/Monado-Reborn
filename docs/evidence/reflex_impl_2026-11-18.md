@@ -1,5 +1,7 @@
 # Evidencia: NVIDIA Reflex (T272), implementación opt-in (2026-11-18)
 
+> English version: [`reflex_impl_2026-11-18.en.md`](reflex_impl_2026-11-18.en.md)
+
 **Pregunta:** ¿funciona la integración de Reflex añadida en esta sesión (runtime de Streamline compartido con DLSS,
 token por frame, marcadores, *sleep*, ajuste `reflex`, DLLs)? **Resultado:** compila, enlaza y arranca en el juego
 real: Streamline carga Reflex + PCL, `slReflexGetState` da baja latencia disponible y el bucle de frame entra en
@@ -49,8 +51,10 @@ durante la construcción de pipelines; el frame 8 llega a t=11.9 s (máx. 8162 m
 fase termina en t=5.5 s (máx. 2003 ms) y no hay avisos. Se aisló:
 
 - no es `slReflexSleep`: con `XCDE_REFLEX_NOSLEEP=1` los stalls siguen;
-- no es el proxy de swapchain: con la superficie/hooks desactivados (diagnóstico `XCDE_REFLEX_NO_PROXY`) siguen;
-- no son los plugins DLSS/NGX no solicitados: con un directorio de plugins solo Reflex (`XCDE_SL_PLUGIN_DIR`) siguen;
+- no es el proxy de swapchain: con la superficie/hooks desactivados (diagnóstico temporal de esta investigación,
+  ya retirado del código) siguen;
+- no son los plugins DLSS/NGX no solicitados: con un directorio de plugins solo Reflex (diagnóstico temporal,
+  retirado) siguen;
 - se reproduce pidiendo **solo DLSS** en esta GPU (run C), sin Reflex.
 
 Es decir, cargar el runtime de Streamline (interposer/plugins) hace más lento el prewarm de pipelines del puerto.
@@ -101,7 +105,8 @@ runtime mapeado y Windows lo reclama al terminar. Es seguro porque el proceso es
 a Vulkan/Streamline después.
 
 Validación: reconstruido y enlazado (`build/xcde.exe`, 20:22); un cierre por `WM_CLOSE` directo no generó ningún
-informe nuevo (0 crash reports) y el proceso terminó. Queda la confirmación con el cierre real desde el launcher.
+informe nuevo (0 crash reports) y el proceso terminó. **Confirmado por el usuario:** el arranque normal y el cierre
+con la X ya no generan informe.
 
 ## Límites
 
