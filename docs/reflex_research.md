@@ -328,7 +328,9 @@ Validation state (2026-11-18):
   verification used here. PCL was NA until the app answered `PCLState.statsWindowMessage`: `device.c` now hooks it
   and calls `ePCLatencyPing` for the next frame (`reflex_pcl_ping`); a real click triggers it (`pings=1-2` in
   `XCDE_REFLEX_STATS`) and the user sees PCL when a click focuses the window or after alt-tabbing it to the
-  foreground, while synthetic automation input/focus does not register with SDL.
+  foreground, while synthetic automation input/focus does not register with SDL. PCL matrix (title screen, RTSS):
+  60 V-Sync **69.74 ms**, 120/mailbox **97.94 ms** (52 actual FPS), 30/repeated presents **68.02 ms**; all
+  non-zero, but these are loading-screen values, not gameplay, and not a latency comparison.
 - **Startup crash (fixed):** the first real launcher run with `reflex = on` crashed at frame 8 in the run-speed path
   (`f_7000593120+0xb0`, read of `0xda8`) because the longer Streamline startup let the party scanner find the field
   object before its `+0x680` link existed. `field_group` (`runtime/hle/party.c`) now defers the guest call until the

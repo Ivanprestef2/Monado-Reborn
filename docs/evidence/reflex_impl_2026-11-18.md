@@ -170,6 +170,19 @@ ventana a primer plano (Alt-Tab), incluso en la pantalla de carga. Los clics/foc
 no cuentan como entrada real para SDL, por eso las capturas automáticas siguen mostrando NA. Sin el handler el
 mensaje queda sin respuesta y el PCL sigue NA.
 
+### Matriz PCL (pantalla de título, campo PCL de RTSS)
+
+| Configuración | PCL | FPS objetivo / real | Pings vistos |
+|---|---|---|---|
+| 60 V-Sync | **69.74 ms** | 60 / 50 | 12 |
+| 120, presentación mailbox | **97.94 ms** | 120 / 52 | 19 |
+| 30, presents repetidos | **68.02 ms** | 30 / 29 | 15 |
+
+Los tres valores son distintos de cero, así que el camino PCL funciona en las tres configuraciones. Son medidas de
+la pantalla de título/carga (no de gameplay), el overlay es el de RTSS (el HUD de NVIDIA sigue sin renderizarse) y
+el FPS real no alcanza el objetivo de 120 en esta GPU; por eso **no** son una comparación de latencia ni una
+ganancia.
+
 ## Límites
 
 - Los runs automatizados son de pantalla de título (240 frames) y no de gameplay; la sesión real del usuario

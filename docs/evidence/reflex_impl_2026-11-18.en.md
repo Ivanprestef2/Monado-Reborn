@@ -164,6 +164,18 @@ when alt-tabbing the window to the foreground, even on the loading screen. The a
 do not count as real input to SDL, which is why the automated captures still show NA. Without the handler the
 message is never answered and PCL stays NA.
 
+### PCL matrix (title screen, RTSS PCL field)
+
+| Configuration | PCL | Target / actual FPS | Pings seen |
+|---|---|---|---|
+| 60 V-Sync | **69.74 ms** | 60 / 50 | 12 |
+| 120, mailbox presentation | **97.94 ms** | 120 / 52 | 19 |
+| 30, repeated presents | **68.02 ms** | 30 / 29 | 15 |
+
+All three values are non-zero, so the PCL path works in all three configurations. They are title/loading-screen
+measurements (not gameplay), the overlay is RTSS (NVIDIA's HUD still does not render) and the actual FPS does not
+reach the 120 target on this GPU; they are **not** a latency comparison or a gain.
+
 ## Limits
 
 - The automated runs are title-screen runs (240 frames), not gameplay; the user's real session (2409 frames) was
