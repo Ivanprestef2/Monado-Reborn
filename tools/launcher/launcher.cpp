@@ -161,6 +161,7 @@ struct Cfg {
     int cutscenes = 0;      // T224: 0 at the FPS setting, 1 at 30 (xcde.ini cutscenes = same | 30)
     bool cut_fg = false;    // T224: cutscenes at 30 + frame generation, gameplay without it (xcde.ini cutscenes = 30fg)
     bool party_switch = false;  // party mod: switch the controlled character (F2 / L2 + L1 / R1), runtime/hle/party.c
+    bool quickstep_slot = false; // dedicated Quick Step gem slot (Monado II port), runtime/hle/quickstep_*.c
     float run_speed = 1.0f;     // GitHub #100: player movement multiplier (1, 1.5, 2), runtime/hle/party.c
     bool show_fps = false;
     int fps = 0;  // index into k_fps_ini
@@ -334,6 +335,12 @@ static const char *const k_en[][2] = {
      "Hands control to the next party member, in the field and in battle. Each stays where it is\n"
      "and keeps its art cooldowns; the previous one goes to the AI. Not in menus or scenes,\n"
      "and in battle it skips downed members."},
+    {"Ranura de gema Paso Veloz dedicada (Cambiar equipo, a la derecha de las botas)",
+     "Dedicated Quick Step gem slot (Change Equipment, right of the boots)"},
+    {"Cada personaje tiene una ranura extra solo para una gema Paso Veloz que ya tengas.\n"
+     "Se guarda con cada partida (en una carpeta oculta junto a la partida). Actívalo antes de jugar.",
+     "Each character gets an extra slot just for a Quick Step gem you already own.\n"
+     "It is saved with each save file (in a hidden folder beside it). Turn it on before playing."},
     {"Automático (el mando conectado; sin mando, teclado)", "Automatic (the connected controller; without one, keyboard)"},
     {"Teclado (las teclas asignadas)", "Keyboard (the bound keys)"}, {"Iconos de botones", "Button icons"},
     {"Falta el pack: descarga \"%s\" de GameBanana y pon su carpeta romfs en mods\\%s",
@@ -603,6 +610,7 @@ static void load() {
         else if (!strcmp(k, "reflex")) g.reflex = !strcmp(v, "on") ? 1 : !strcmp(v, "boost") ? 2 : 0;  // [XCDE] T272
         else if (!strcmp(k, "cutscenes")) { g.cutscenes = !strcmp(v, "30") || !strcmp(v, "30fg") ? 1 : 0; g.cut_fg = !strcmp(v, "30fg"); }
         else if (!strcmp(k, "party_switch")) g.party_switch = atoi(v) != 0;
+        else if (!strcmp(k, "quickstep_slot")) g.quickstep_slot = !strcmp(v, "1") || !strcmp(v, "true");
         else if (!strcmp(k, "run_speed")) { float x = (float)atof(v); g.run_speed = x < 1.0f ? 1.0f : x > 2.0f ? 2.0f : x; }
         else if (!strcmp(k, "show_fps")) g.show_fps = atoi(v) != 0;
         else if (!strcmp(k, "vulkan_api")) g.vulkan_api = !strcmp(v, "1.2") ? 12 : !strcmp(v, "1.3") ? 13 : !strcmp(v, "1.4") ? 14 : 0;
@@ -686,6 +694,7 @@ static bool save() {
     fprintf(f, "reflex = %s\n", g.reflex == 2 ? "boost" : g.reflex == 1 ? "on" : "off");  // [XCDE] T272
     fprintf(f, "cutscenes = %s\n", g.cut_fg ? "30fg" : g.cutscenes ? "30" : "same");
     fprintf(f, "party_switch = %d\n", g.party_switch);
+    fprintf(f, "quickstep_slot = %d\n", g.quickstep_slot);
     fprintf(f, "run_speed = %.2f\n", g.run_speed);
     fprintf(f, "volume = %d\nmovie_audio = %d\nlanguage = %s\nfps = %s\n", g.volume, g.movie_audio, k_lang_ini[g.lang], k_fps_ini[g.fps]);
     for (const Mod &m : g_mods) if (!is_icon_mod(m.name)) fprintf(f, "mod_%s = %d", m.name.c_str(), m.on), fputc(10, f);
@@ -2020,6 +2029,9 @@ static void tab_controls() {
     ImGui::SetItemTooltip(T("Pasa el control al siguiente miembro del grupo, en el campo y en combate. Cada uno se queda\n"
                           "donde está y conserva sus recargas de artes; el anterior pasa a la IA. No funciona en menús ni\n"
                           "escenas, y en combate salta a los miembros caídos."));
+    ImGui::Checkbox(T("Ranura de gema Paso Veloz dedicada (Cambiar equipo, a la derecha de las botas)"), &g.quickstep_slot);
+    ImGui::SetItemTooltip(T("Cada personaje tiene una ranura extra solo para una gema Paso Veloz que ya tengas.\n"
+                          "Se guarda con cada partida (en una carpeta oculta junto a la partida). Actívalo antes de jugar."));
     ImGui::Checkbox(T("Vibración del mando"), &g.rumble);  // [XCDE] the game's vibration -> SDL gamepad rumble
     ImGui::SetItemTooltip(T("Activa el motor del mando cuando el juego manda vibración (por ejemplo en combate).\n"
                             "También se puede cambiar dentro del juego, en el menú, pestaña Controles."));

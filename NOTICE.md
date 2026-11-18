@@ -10,6 +10,7 @@ fonts (see `CONTRIBUTING.md`, Article I). Players must supply files extracted fr
 |---|---|---|---|
 | AArch64→C generator (`gen.py`, `lifter.py`, `simd_c.py`, `analyze.py`, `nso.py`, `sym.py`) | [LASRecomp](https://github.com/peiikai/LASRecomp) by Peiikai, commit `136f679` | MIT | `tools/lifter/` |
 | Runtime (loader, dispatch, kernel, IPC, services, NVN→Vulkan, Maxwell shader translator) | LASRecomp, commit `136f679` | MIT | `runtime/` |
+| Optional cheats (damage, rewards, enemy HP, no fall damage), Exit to desktop rows, 99 save slots, dedicated Quick Step slot | [Monado II](https://github.com/brendonbusker/Monado-II) by the Monado II contributors, commit `69e593a` | MIT | `runtime/hle/cheats_*`, `title_exit*`, `system_exit*`, `desktop_exit_caption*`, `expanded_save*`, `quickstep_*`, `runtime/ui/cheats_controls.h`, their hooks in `games/xcde/patches.py` (see `docs/CHEATS_AND_MODS.md`) |
 
 Every edit to a copied file is marked `[XCDE]` (the project's working name) and listed in `docs/UPSTREAM.md`.
 

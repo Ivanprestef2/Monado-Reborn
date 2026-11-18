@@ -69,7 +69,7 @@ set(OPT -${MONADO_OPT} ${PGO_FLAGS})
 # ---- unit lists: the one place a new runtime file is added ----
 set(RT_UNITS loader dispatch kernel ipc fnprof services/fs services/romfs_virtual services/am services/acc services/time
     services/hid_set services/kbicons services/misc services/audio services/hwopus hle/heaps hle/pl hle/vi hle/nvn_boot
-    hle/fibers hle/input hle/party hle/bindings hle/movie hle/framepace hle/foliage_distance hle/foliage_pool hle/graphics
+    hle/fibers hle/input hle/party hle/bindings hle/movie hle/framepace hle/foliage_distance hle/foliage_pool hle/graphics hle/cheats_options hle/cheats_combat hle/cheats_rewards hle/cheats_enemy_health hle/title_exit hle/system_exit hle/desktop_exit_caption hle/expanded_saves hle/expanded_save_scan hle/quickstep_native hle/quickstep_picker hle/quickstep_save hle/quickstep_slot hle/quickstep_stats hle/quickstep_stats_ui hle/quickstep_ui_memory
     host/stubs host/settings_ini host/stubs_gfx host/main_boot diag/diag diag/sampler diag/watchdog
     diag/crashdump paths)
 set(NVN_UNITS astc cmdbuf formats maxwell/translate objects output_scale smaa_data tegra texpatch vulkan/device

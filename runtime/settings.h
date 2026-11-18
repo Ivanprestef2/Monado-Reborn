@@ -114,6 +114,12 @@ typedef struct {
     bool gpu_memory_budget; // use VK_EXT_memory_budget when exposed; informational allocator support
     bool input_rumble;   // [XCDE] hand rumble through to SDL when the game vibrates (hid cmds 201+hid_set.c)
     bool taa_off;        // [XCDE] remove only the game's temporal AA (lib_nx.ini tmaa): xcde.ini taa = 0 (default 1: kept)
+    // [XCDE] Optional gameplay cheats (ported from Monado II; runtime/cheats_options.h): each off by default, live from F1.
+    bool cheat_damage_dealt, cheat_damage_received, cheat_exp, cheat_ap, cheat_sp, cheat_gold, cheat_enemy_health;
+    int cheat_damage_dealt_percent, cheat_damage_received_percent, cheat_exp_percent, cheat_ap_percent,
+        cheat_sp_percent, cheat_gold_percent, cheat_enemy_health_percent;  // 100 = 1.00x (0..2000; enemy health 10..2000)
+    bool cheat_no_fall_damage;
+    bool quickstep_slot; // [XCDE] dedicated character-owned Quick Step gem slot (Monado II port, runtime/hle/quickstep_*.c), opt-in
 } Settings;
 
 enum { N_TUNIC_COLOURS = 13, N_HEART_COLOURS = 9 };

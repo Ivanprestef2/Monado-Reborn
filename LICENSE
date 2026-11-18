@@ -2,6 +2,8 @@ MIT License
 
 Copyright (c) 2026 Peiikai (LASRecomp, from which the lifter and runtime of this project are derived)
 Copyright (c) 2026 Monado contributors
+Copyright (c) 2026 Monado II contributors (the cheats and menu / save mods in runtime/hle/cheats_*, title_exit,
+                   system_exit, desktop_exit_caption, expanded_save*, quickstep_*: github.com/brendonbusker/Monado-II)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

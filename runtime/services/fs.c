@@ -14,6 +14,7 @@
 #include "../rando.h"
 #include "../ipc.h"
 #include "romfs_virtual.h"  // [XCDE]
+#include "../hle/quickstep_save.h"  // [XCDE] Quick Step slot metadata (Monado II port)
 #ifndef O_BINARY
 #define O_BINARY 0
 #endif
@@ -413,7 +414,7 @@ static Service *open_romfs_storage(void) {
 
 // ------------------------------------------------------------------ host-directory filesystem
 typedef struct { char root[1024]; bool save; int journal; } HostFs;  // (save: a save_N mount; journal: below, or -1)
-typedef struct { int fd; char path[1100]; bool save; int journal; } HostFile;
+typedef struct { int fd; char path[1100]; char root[1024]; bool save; int journal; } HostFile;  // (root: its mount)
 typedef struct { DIR *d; char path[1024]; int mode; } HostDir;
 static void journal_touch(int j);  // (save commits, below)
 
@@ -445,6 +446,7 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         if (n < 0) { resp->result = errno_result(); LOG("[asset] read failed: %s offset=%lld bytes=%lld errno=%d\n", f->path, (long long)off, (long long)size, errno); }
         else if (!f->save && getenv("XCDE_ASSET_TRACE")) LOG("[asset] read: %s offset=%lld requested=%lld read=%lld\n", f->path, (long long)off, (long long)size, (long long)n);
         if (f->save) {
+            if (n > 0) quickstep_save_observe(f->root, f->path, (void *)(uintptr_t)b->addr, off, n);  // [XCDE] Quick Step
             LOG("[save] read %s off %lld size %lld -> guest %llx\n", f->path, (long long)off, (long long)size, (unsigned long long)b->addr);
             extern void save_editor_file_read(const char *path, uint64_t addr, int64_t off, int64_t size);
             save_editor_file_read(f->path, b->addr, off, n);
@@ -460,7 +462,14 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
         IpcBuf *a = in_buf(req, 0);
         if (f->save)
             LOG("[save] write %s off %lld size %lld <- guest %llx\n", f->path, (long long)off, (long long)size, (unsigned long long)a->addr);
+        // [XCDE] Quick Step slot (Monado II port): optional per-save metadata staged with the native payload write
+        QuickstepSaveWrite plan = {0};
+        if (f->save && (off < 0 || size < 0 || (uint64_t)size > a->size)) { errno = EINVAL; resp->result = errno_result(); break; }
+        if (f->save && quickstep_save_prepare(f->root, f->path, (void *)(uintptr_t)a->addr, off, size, &plan)) {
+            resp->result = errno_result(); break;
+        }
         journal_touch(f->journal);
+        if (plan.tracked && quickstep_save_stage(f->root, &plan)) { resp->result = errno_result(); break; }
         if (pwrite(f->fd, (void *)(uintptr_t)a->addr, (size_t)size, off) < 0) resp->result = errno_result();
         else if (f->save) {
             extern void flags_ext_save_written(const char *path, uint64_t addr, int64_t off, int64_t size);
@@ -708,9 +717,12 @@ static void journal_commit(int j) {
     if (sj->dirty) {
         char jp[1100];
         snprintf(jp, sizeof jp, "%s.journal", sj->root);
+        if (quickstep_save_flush(sj->root))  // [XCDE] Quick Step metadata becomes final with the native Commit
+            LOG("[save] Quick Step metadata of %s could not be flushed\n", sj->root);
         fsync_tree(sj->root);
         rm_rf(jp, false);
         sj->dirty = false;
+        quickstep_save_committed(sj->root);
     }
     pthread_mutex_unlock(&g_journal_lock);
 }
@@ -730,13 +742,17 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         close(fd);
         break;
     }
-    case 1: if (unlink(p)) resp->result = errno_result(); break;
+    case 1:
+        if (unlink(p)) resp->result = errno_result();
+        else if (fs->save && quickstep_save_changed(fs->root, p, NULL)) LOG("[save] Quick Step metadata not updated for %s\n", p);
+        break;
     case 2: if (mkdir(p, 0755)) resp->result = errno_result(); break;
     case 3: if (rmdir(p)) resp->result = errno_result(); break;
     case 4: if (rm_rf(p, false)) resp->result = errno_result(); break;
     case 5: case 6:
         host_path(fs, in_path(req, 1), p2, sizeof p2);
         if (rename(p, p2)) resp->result = errno_result();
+        else if (fs->save && quickstep_save_changed(fs->root, p, p2)) LOG("[save] Quick Step metadata not moved for %s\n", p);
         break;
     case 7: {  // GetEntryType
         struct stat sb;
@@ -758,6 +774,7 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         HostFile *f = calloc(1, sizeof *f);
         f->fd = fd;
         strlcpy(f->path, p, sizeof f->path);
+        strlcpy(f->root, fs->root, sizeof f->root);
         f->save = fs->save;
         f->journal = fs->journal;
         Service *fs_ = service_new("IFile", file, f);
@@ -779,7 +796,13 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
     }
     case 10: journal_commit(fs->journal); break;  // Commit
     case 11: case 12: OUT(int64_t, 0) = 0x40000000; resp_size(resp, 8); break;
-    case 13: rm_rf(p, true); break;
+    case 13:
+        rm_rf(p, true);
+        if (fs->save) {  // [XCDE] a cleaned mount has no Quick Step metadata left either
+            size_t n = strlen(fs->root);
+            if (!strncmp(p, fs->root, n) && (!p[n] || !strcmp(p + n, "/"))) quickstep_save_committed(fs->root);
+        }
+        break;
     case 14: memset(resp->data, 0, 0x20); resp_size(resp, 0x20); break;
     default: diag_unimplemented("ipc", "[fs] IFileSystem cmd %u", req->cmd);
     }

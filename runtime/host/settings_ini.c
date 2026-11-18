@@ -13,12 +13,15 @@
 #include "../graphics_options.h"
 #include "../ui_scale.h"  // [XCDE] GitHub #121
 #include "../perf_overlay_opts.h"  // [XCDE] GitHub #147
+#include "../cheats_options.h"  // [XCDE] optional cheats (Monado II port)
 
 const char *const g_language_codes[N_LANGUAGES] = {"", "ja", "en-US", "fr", "de", "it", "es", "zh-CN", "ko", "nl", "pt", "ru", "zh-Hans", "zh-Hant"};
 const char *const g_language_names[N_LANGUAGES] = {"Auto", "Japanese", "English", "French", "German", "Italian", "Spanish",
                                                    "Chinese", "Korean", "Dutch", "Portuguese", "Russian",
                                                    "Chinese (Simplified)", "Chinese (Traditional)"};
-Settings g_settings = {.fps = 30, .fps_overlay = true, .upscaler_auto = true, .volume = 1.0f, .movie_audio = true, .res_mode = RES_MATCH, .upscaler = UPSCALE_FSR1, .upscale_quality = UQ_QUALITY, .upscale_sharpness = -1.0f, .game_blur = true, .vsync = true, .ui_lang = 1, .gpu_index = -1, .gpu_profile = GPU_PROFILE_AUTO, .gpu_gpl = GPU_GPL_AUTO, .occlusion = OCCL_AUTO, .amd_fix = AMD_FIX_AUTO, .session_fix = SESSION_FIX_AUTO, .gpu_memory_budget = true, .input_rumble = true, .grass_lod = GRASS_DEFAULT, .run_speed = 1.0f, .ui_scale = 100};
+Settings g_settings = {.fps = 30, .fps_overlay = true, .upscaler_auto = true, .volume = 1.0f, .movie_audio = true, .res_mode = RES_MATCH, .upscaler = UPSCALE_FSR1, .upscale_quality = UQ_QUALITY, .upscale_sharpness = -1.0f, .game_blur = true, .vsync = true, .ui_lang = 1, .gpu_index = -1, .gpu_profile = GPU_PROFILE_AUTO, .gpu_gpl = GPU_GPL_AUTO, .occlusion = OCCL_AUTO, .amd_fix = AMD_FIX_AUTO, .session_fix = SESSION_FIX_AUTO, .gpu_memory_budget = true, .input_rumble = true, .grass_lod = GRASS_DEFAULT, .run_speed = 1.0f, .ui_scale = 100,
+    .cheat_damage_dealt_percent = 100, .cheat_damage_received_percent = 100, .cheat_exp_percent = 100, .cheat_ap_percent = 100,
+    .cheat_sp_percent = 100, .cheat_gold_percent = 100, .cheat_enemy_health_percent = 100};
 int g_window_w = 1280, g_window_h = 720;  // windowed size (settings.h)
 
 // [XCDE] Mods (runtime/services/romfs_virtual.c): xcde.ini `mod_<folder> = 0/1`; a folder not listed is on.
@@ -49,6 +52,20 @@ static char *trim(char *s) {
     return s;
 }
 
+// [XCDE] cheats (Monado II port): only an exact 1 / true opts in; malformed or out-of-range percentages fall back to 1x.
+static bool cheat_enabled(const char *value) {
+    return !strcmp(value, "1") || !strcmp(value, "true");
+}
+static int cheat_percent_bound(int value, int minimum) {
+    return value >= minimum && value <= 2000 ? value : 100;
+}
+static int cheat_percent(const char *value, int minimum) {
+    if (!*value) return 100;
+    for (const char *p = value; *p; ++p) if (*p < '0' || *p > '9') return 100;
+    if (strlen(value) > 4) return 100;
+    return cheat_percent_bound(atoi(value), minimum);
+}
+
 static int lang_index(const char *v) {
     for (int i = 0; i < N_LANGUAGES; i++)
         if (!strcmp(v, i ? g_language_codes[i] : "auto")) return i;
@@ -58,9 +75,12 @@ static int lang_index(const char *v) {
 void settings_load(void) {
     xcde_foliage_configure(g_settings.grass_lod);  // [XCDE] default / XCDE_GRASS_DISTANCE even without an INI
     // test runs (hidden window, deterministic, scripted input) ignore the player's settings unless XCDE_INI names a file
-    if (!getenv("XCDE_INI") && (getenv("LARECOMP_HIDDEN") || getenv("XCDE_DETERMINISTIC") || getenv("XCDE_INPUT_REPLAY"))) return;
+    if (!getenv("XCDE_INI") && (getenv("LARECOMP_HIDDEN") || getenv("XCDE_DETERMINISTIC") || getenv("XCDE_INPUT_REPLAY"))) {
+        xcde_cheats_publish(&g_settings);  // (all off)
+        return;
+    }
     FILE *f = fopen(ini_path(), "r");
-    if (!f) return;
+    if (!f) { xcde_cheats_publish(&g_settings); return; }
     char line[512];
     while (fgets(line, sizeof line, f)) {
         char *s = line;
@@ -128,6 +148,13 @@ void settings_load(void) {
             float x = (float)atof(v);
             g_settings.run_speed = x < 1.0f ? 1.0f : x > 2.0f ? 2.0f : x;
         }
+#define LOAD_CHEAT(name, minimum) \
+        else if (!strcmp(k, "cheat_" #name)) g_settings.cheat_##name = cheat_enabled(v); \
+        else if (!strcmp(k, "cheat_" #name "_percent")) g_settings.cheat_##name##_percent = cheat_percent(v, minimum);
+        XCDE_CHEAT_MULTIPLIERS(LOAD_CHEAT)
+#undef LOAD_CHEAT
+        else if (!strcmp(k, "cheat_no_fall_damage")) g_settings.cheat_no_fall_damage = cheat_enabled(v);
+        else if (!strcmp(k, "quickstep_slot")) g_settings.quickstep_slot = cheat_enabled(v);  // [XCDE] Quick Step slot mod
         else if (!strcmp(k, "ui_scale")) g_settings.ui_scale = ui_scale_percent(atoi(v));  // [XCDE] GitHub #121
         else if (!strcmp(k, "volume")) g_settings.volume = (float)atof(v) / 100.0f;
         else if (!strcmp(k, "movie_audio")) g_settings.movie_audio = atoi(v) != 0;
@@ -148,6 +175,7 @@ void settings_load(void) {
     gfx_fold_effects_off(&g_settings.graphics, &g_settings.effects_off);  // [XCDE] old checkboxes -> the Off choices
     xcde_foliage_configure(g_settings.grass_lod);  // [XCDE] the saved grass preset
     xcde_graphics_publish(&g_settings.graphics);
+    xcde_cheats_publish(&g_settings);  // [XCDE] before any guest event reads them
     if (g_window_w < 320) g_window_w = 320;
     if (g_window_h < 180) g_window_h = 180;
     if (g_settings.volume < 0) g_settings.volume = 0;
@@ -197,6 +225,12 @@ void settings_save(void) {
     gfx_save(f, &g_settings.graphics);  // [XCDE]
     fprintf(f, "party_switch = %d\n", g_party_switch);
     fprintf(f, "run_speed = %.2f\n", g_settings.run_speed);
+#define SAVE_CHEAT(name, minimum) fprintf(f, "cheat_" #name " = %d\ncheat_" #name "_percent = %d\n", \
+        g_settings.cheat_##name, cheat_percent_bound(g_settings.cheat_##name##_percent, minimum));
+    XCDE_CHEAT_MULTIPLIERS(SAVE_CHEAT)
+#undef SAVE_CHEAT
+    fprintf(f, "cheat_no_fall_damage = %d\n", g_settings.cheat_no_fall_damage);
+    fprintf(f, "quickstep_slot = %d\n", g_settings.quickstep_slot);
     fprintf(f, "ui_scale = %d\n", ui_scale_percent(g_settings.ui_scale));  // [XCDE] GitHub #121
     fprintf(f, "vulkan_api = %s\nfps_overlay = %d\n", g_settings.vulkan_api == 12 ? "1.2" : g_settings.vulkan_api == 13 ? "1.3" : g_settings.vulkan_api == 14 ? "1.4" : "auto", g_settings.fps_overlay);
     fprintf(f, "fps_overlay_style = %s\n", g_settings.fps_overlay_style == FPS_OVERLAY_SIMPLE ? "simple" : "detailed");
