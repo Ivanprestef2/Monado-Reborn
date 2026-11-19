@@ -5202,9 +5202,12 @@ static bool pt_init(void) {
 static bool frame_lag_staged(void) { return atomic_load(&vc_lag) && vc_stage_on(); }
 
 // Does [off, off + n) (heap offsets) contain a page the GPU wrote? Those bytes are only current on the GPU timeline, so
-// a host snapshot would capture stale contents: callers keep the GPU-time copy for such ranges.
+// a host snapshot would capture stale contents: callers keep the GPU-time copy for such ranges. Without the page map
+// (no write tracking: Linux, or a forced XCDE_FRAME_LAG=1 with the vertex cache off) we cannot tell, so treat the range
+// as unsafe: never snapshot bytes we might not be able to vouch for.
 static bool heap_pages_gpu(uint64_t off, uint64_t n) {
-    if (!n || !vc_page_gpu || off >= HEAP_MAX) return false;
+    if (!n || off >= HEAP_MAX) return false;
+    if (!vc_page_gpu) return true;
     if (off + n > HEAP_MAX) n = HEAP_MAX - off;
     uint64_t lo = off / VC_PAGE, hi = (off + n + VC_PAGE - 1) / VC_PAGE;
     for (uint64_t p = lo; p < hi; p++) if (vc_page_gpu[p]) return true;
