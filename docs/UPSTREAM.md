@@ -52,7 +52,9 @@ no están activos (RADV usa la ruta dma-buf GTT y `pt_init()` devuelve false sin
   esas páginas, así que los streams de efectos/partículas dibujaban el contenido de otro frame (quad grandes
   estirados). Ahora, mientras el frame lag está activo, las páginas se copian al transient ring en el momento del
   submit; `XCDE_VC_STAGE=0` restaura el comportamiento anterior para un A/B. Las lecturas de host que el frame lag
-  sigue haciendo un frame tarde (SSBOs y la copia `gfast` del path de compute) no están cubiertas.
+  sigue haciendo un frame tarde (SSBOs de graphics leídos directamente del heap importado) no están cubiertas.
+  `T-FRAME-LAG-HOST-READS` (2026-11-19) extiende el snapshot a la copia `gfast` del path de compute y al llenado
+  inicial de los mirrors de vértices.
 
 Detalle, síntomas, diagnósticos y límites: [evidence/windows-vertex-corruption/summary.md](evidence/windows-vertex-corruption/summary.md).
 

@@ -1568,3 +1568,12 @@ Detalle: `docs/PERFORMANCE_UI.md`. Evidencia: `docs/evidence/performance_ui_2026
   latched, `vc_flush` stages the written pages through the transient ring at submit time; GPU-written-page entries
   unchanged; `XCDE_VC_STAGE=0` is the A/B opt-out. Residual lag-time host reads (SSBOs, `gfast` copy-in) are not
   covered. Detail: [windows-vertex-corruption](../evidence/windows-vertex-corruption/summary.md).
+- [x] T-FRAME-LAG-HOST-READS (2026-11-19) **Windows async frame lag: stage the compute copy-in and mirror fills.**
+  Follow-up to T-FRAME-LAG-VCACHE for issue #171 (one-frame geometry/effect explosions). `gfast_prepare` recorded the
+  heap-to-device copy of a dispatch's storage buffers on the GPU timeline, and a new vertex mirror's whole-range fill
+  did the same: with the GPU a frame behind, those copies could read pages the game had already rewritten for the next
+  frame. Fix: while frame lag is latched (`frame_lag_staged()`), both snapshot their CPU-written ranges into the
+  transient ring and copy from there; ranges containing GPU-written pages keep the GPU-time copy (their bytes are only
+  current on the GPU timeline). `XCDE_VC_STAGE=0` disables it with the rest. Graphics shader storage buffers bound
+  straight to the imported heap remain a GPU-timeline read. Detail:
+  [windows-vertex-corruption](../evidence/windows-vertex-corruption/summary.md).

@@ -5007,6 +5007,10 @@ static void gmem_stage_finish(bool stores) {
 // inside them use that copy, and a shader that stores gets the ranges copied back to the heap right after it (the
 // game alternates its buffer sets per frame: the CPU isn't writing them meanwhile). Accesses outside the table use
 // the heap as before. LARECOMP_VK_GMEM_FAST=0: no copy (empty table: everything goes to the heap, the old behaviour).
+//
+// [XCDE] T-FRAME-LAG: defined with the vertex cache below (they need its GPU-written page map).
+static bool frame_lag_staged(void);
+static bool heap_pages_gpu(uint64_t off, uint64_t n);
 #define GFAST_SIZE (32ull << 20)
 static VkBuffer gfast_buf;
 static VmaAllocation gfast_mem;
@@ -5069,7 +5073,32 @@ static void gfast_prepare(VkCommandBuffer cb) {
             LOG("\n");
         }
     }
-    vkCmdCopyBuffer(cb, gmem_buf, gfast_buf, (uint32_t)m, cp);
+    // [XCDE] T-FRAME-LAG: with the GPU a frame behind, a copy recorded from guest memory runs after the game may have
+    // rewritten those pages with the next frame's data, so this dispatch would read another frame's storage buffer.
+    // Snapshot the ranges now (CPU timeline) and fill gfast_ from the transient ring instead. Ranges the GPU writes
+    // keep the GPU-time copy: their bytes are only current on the GPU timeline.
+    bool staged = false;
+    if (frame_lag_staged()) {
+        bool gpu_src = false;
+        for (int i = 0; i < m && !gpu_src; i++) gpu_src = heap_pages_gpu(cp[i].srcOffset, cp[i].size);
+        if (!gpu_src) {
+            uint64_t total = 0;
+            for (int i = 0; i < m; i++) total += cp[i].size;
+            VkSpan st = vk_transient(total, 16);
+            VkBufferCopy sc[16];
+            uint64_t at = 0;
+            for (int i = 0; i < m; i++) {
+                memcpy((uint8_t *)st.ptr + at, (const void *)(uintptr_t)(HEAP_BASE + cp[i].srcOffset), cp[i].size);
+                sc[i] = (VkBufferCopy){st.off + at, cp[i].dstOffset, cp[i].size};
+                at += cp[i].size;
+            }
+            vkCmdCopyBuffer(cb, st.buf, gfast_buf, (uint32_t)m, sc);
+            static int nl;
+            if (nl++ < 5) LOG("[gfast] frame-lag staging: %d ranges, %llu KB\n", m, (unsigned long long)(total >> 10));
+            staged = true;
+        }
+    }
+    if (!staged) vkCmdCopyBuffer(cb, gmem_buf, gfast_buf, (uint32_t)m, cp);
     vk_full_barrier(cb);
     gmap_tab[GMAP_MAX * 4] = (uint32_t)m;
     memcpy(gfast_cp, cp, (size_t)m * sizeof cp[0]);
@@ -5165,6 +5194,32 @@ static bool pt_init(void) {
     vc_page_gen = calloc(HEAP_MAX / VC_PAGE, sizeof *vc_page_gen);
     vc_page_gpu = calloc(HEAP_MAX / VC_PAGE, 1);
     vc_page_gen[0] = ++vc_gen;  // (the probe took page 0's tracking)
+    return true;
+}
+
+// [XCDE] T-FRAME-LAG: is the one-frame-in-flight path latched and are its host snapshots enabled? (XCDE_VC_STAGE=0 is
+// the A/B opt-out: the copies read guest memory on the GPU timeline as before.)
+static bool frame_lag_staged(void) { return atomic_load(&vc_lag) && vc_stage_on(); }
+
+// Does [off, off + n) (heap offsets) contain a page the GPU wrote? Those bytes are only current on the GPU timeline, so
+// a host snapshot would capture stale contents: callers keep the GPU-time copy for such ranges.
+static bool heap_pages_gpu(uint64_t off, uint64_t n) {
+    if (!n || !vc_page_gpu || off >= HEAP_MAX) return false;
+    if (off + n > HEAP_MAX) n = HEAP_MAX - off;
+    uint64_t lo = off / VC_PAGE, hi = (off + n + VC_PAGE - 1) / VC_PAGE;
+    for (uint64_t p = lo; p < hi; p++) if (vc_page_gpu[p]) return true;
+    return false;
+}
+
+// Snapshot a CPU-written guest range into the transient ring for this submission and return where it landed. The chunk
+// is not recycled before the submission completes, so the GPU reads the bytes that belonged to this frame even with the
+// GPU a frame behind. False: frame lag off / staging disabled / the range is GPU-written (the caller copies from the
+// heap as before).
+static bool stage_heap_range(uint64_t off, uint64_t n, VkSpan *out) {
+    if (!n || off >= HEAP_MAX || !frame_lag_staged() || heap_pages_gpu(off, n)) return false;
+    if (off + n > HEAP_MAX) n = HEAP_MAX - off;
+    *out = vk_transient(n, 16);
+    memcpy(out->ptr, (const void *)(uintptr_t)(HEAP_BASE + off), n);
     return true;
 }
 
@@ -5411,6 +5466,21 @@ static void xsh_copy(XfbShadow *s, VkCommandBuffer cb, uint64_t at, uint64_t n) 
     vkCmdCopyBuffer(cb, gmem_buf, s->buf, 1, &c);
     vk_full_barrier(cb);  // (the next readers see it)
 }
+// [XCDE] T-FRAME-LAG: a mirror's creation fill copies the parts of the range this frame's writer did not touch (the heap
+// holds those). With the GPU a frame behind, that GPU-time read can land after the game rewrote those pages, so snapshot
+// them now instead. The writer's own bytes are copied again from the GPU timeline right after (xsh_written), so a stale
+// snapshot of that part is harmless. A range with GPU-written pages keeps the old GPU-time copy whole: a host snapshot
+// cannot see bytes the GPU has not produced yet.
+static void xsh_copy_staged(XfbShadow *s, VkCommandBuffer cb, uint64_t at, uint64_t n) {
+    VkSpan st;
+    if (!stage_heap_range(at - HEAP_BASE, n, &st)) { xsh_copy(s, cb, at, n); return; }
+    static int nl;
+    if (nl++ < 5) LOG("[vk] mirror %llx +%llu: frame-lag staged fill\n", (unsigned long long)at, (unsigned long long)n);
+    vk_full_barrier(cb);
+    VkBufferCopy c = {st.off, at - s->base, n};
+    vkCmdCopyBuffer(cb, st.buf, s->buf, 1, &c);
+    vk_full_barrier(cb);
+}
 static void xsh_retire_overlaps(uint64_t a, uint64_t sz);
 // after a transform-feedback writer draw (its pass ended): [at, at + n) of the buffer [base, base + size) was written.
 // Returns the mirror when this call made it (NULL: it existed, or none could be made).
@@ -5435,7 +5505,7 @@ static XfbShadow *xsh_written(uint64_t base, uint64_t size, uint64_t at, uint64_
         if (vmaCreateBuffer(g_vk.vma, &bi, &ai, &s->buf, &s->mem, NULL) != VK_SUCCESS) return NULL;
         s->base = base; s->size = size;
         nxsh++;
-        xsh_copy(s, cb, base, size);  // (whole: parts not written this frame hold what the heap holds)
+        xsh_copy_staged(s, cb, base, size);  // (whole: parts not written this frame hold what the heap holds)
         LOG("[vk] transform feedback mirror %llx +%llu in device memory\n", (unsigned long long)base, (unsigned long long)size);
         xsh_count(&xsh_n_made, "made");
         if (at + n > base + size) n = base + size - at;

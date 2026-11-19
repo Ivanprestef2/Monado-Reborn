@@ -62,10 +62,13 @@ the original GPU-time copy (those bytes are only current on the GPU timeline).
 `XCDE_VC_STAGE=0` restores the previous behaviour for an A/B. With frame lag off
 the code path is unchanged.
 
-Not changed: other host-memory reads that frame lag still performs a frame late
-(shader storage buffers and the compute path's `gfast` copy-in). If VFX
-corruption survives the fix, `XCDE_FRAME_LAG=0` remains the safe fallback while
-those are addressed.
+Follow-up (`T-FRAME-LAG-HOST-READS`, 2026-11-19): the compute path's `gfast`
+copy-in and the creation fill of the vertex mirrors now snapshot their
+CPU-written ranges through the same transient ring, so a frame-behind GPU no
+longer reads the next frame's bytes for those. Ranges the GPU writes keep the
+GPU-time copy. Graphics shader storage buffers (bound straight to the imported
+heap) are still read on the GPU timeline; if corruption survives, that is the
+remaining path, and `XCDE_FRAME_LAG=0` remains the safe fallback.
 
 ## Relation to open reports
 
