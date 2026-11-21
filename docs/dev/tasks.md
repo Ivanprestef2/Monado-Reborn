@@ -1611,3 +1611,12 @@ Detalle: `docs/PERFORMANCE_UI.md`. Evidencia: `docs/evidence/2026-11-04-performa
   and `exec.c` `texture_info` restrict `tmp_lod_bias` to CPU-uploaded mipmapped material textures (`XCDE_TMP_LOD_BIAS_ALL=1`
   opt-out) keyed per quality bucket so live upscaler/quality changes apply cleanly. Covered by `tests/native/test_tex_resize.c`
   and `tests/unit/test_vk_source_contracts.py`; ROG Ally Z1E / SteamOS in-game verification pending.
+- [x] T-FOLIAGE-ULTRA (2026-11-20) **Grass vertices explode in Gaur Plains with the 3x Ultra preset.** GitHub #171
+  survived the async vertex-cache and frame-lag fixes; the reporter then isolated it to `grass_lod = ultra`.
+  Explosions stop at `very_high` (2.2x) regardless of weather, camera angle, async, frame lag or the vertex cache:
+  the 3x selector covers nine times the authored MPF area, which left no margin in the old 9x private pool for dense
+  zones. Fix: enlarge the block instead of dropping the preset. The pool is 24x the authored 3.5 MiB (16x for the new
+  4x coverage plus 50% headroom), the bitmap doubles to 512 KiB for the 2000-unit endpoint and arena slots grow to
+  128 MiB. Ultra (3x) returns and **Extreme (4x)** is added; a saved index 5 or `extreme` from the retired 6x preset
+  loads as 4x, and `XCDE_GRASS_DISTANCE` is clamped to 4x. In-game verification at the Gaur Plains spot is pending.
+  Detail: [windows-vertex-corruption](../evidence/2026-11-10-vertex-corruption/summary.md).

@@ -15,8 +15,10 @@ int main(void) {
     assert(xcde_foliage_far_scaled(0, 50, XCDE_FOLIAGE_DEFAULT_SCALE) == 85);
     assert(xcde_foliage_far_scaled(0, 30, XCDE_FOLIAGE_DEFAULT_SCALE) == 51);
     assert(fabsf(xcde_foliage_far_scaled(2, 80, XCDE_FOLIAGE_DEFAULT_SCALE) - 134.6f) < .001f);
+    assert(xcde_foliage_far_scaled(0,500,2.2f)==1100);
     assert(xcde_foliage_far_scaled(0,500,3)==1500);
-    assert(xcde_foliage_far_scaled(0,500,6)==500);
+    assert(xcde_foliage_far_scaled(0,500,4)==2000);
+    assert(xcde_foliage_far_scaled(0,500,6)==500);  // beyond Extreme is rejected
     assert(xcde_foliage_far_scaled(7000, 8000, 1.5f) == 8000);
     assert(xcde_foliage_far_scaled(0, 0, 1.5f) == 0);
     assert(xcde_foliage_far_scaled(80, 20, 1.5f) == 20);
@@ -31,8 +33,9 @@ int main(void) {
         assert(xcde_foliage_far_scaled(0, far, 1) == far);
         float expected = far * 1.5f;
         assert(xcde_foliage_far_scaled(0, far, 1.5f) == expected);
-        for (int scale = 1; scale <= 3; ++scale) {
-            float radius = xcde_foliage_far_scaled(0, far, scale);
+        const float scales[] = {1.f, 1.5f, 2.f, 2.2f, 3.f, 4.f};
+        for (unsigned s = 0; s < sizeof scales / sizeof scales[0]; ++s) {
+            float radius = xcde_foliage_far_scaled(0, far, scales[s]);
             assert(radius >= far && radius <= XCDE_FOLIAGE_MAX_RADIUS);
             /* Actual guest clear rounds bits down to bytes, then allocates
              * one more 32-byte block; include its five-layer worst case. */

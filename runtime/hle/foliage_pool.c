@@ -3,8 +3,10 @@
 #include "foliage_distance.h"
 
 // Unused reserved guest window between the HLE heap and alias mappings.
+// 128 MiB slots leave room for the 4x grass block (~84.7 MiB) and still fit
+// eight maps in the 1.5 GiB window.
 #define FOLIAGE_ARENA_BASE (HLE_HEAP + HLE_HEAP_SIZE)
-#define FOLIAGE_ARENA_STRIDE 0x02000000ull
+#define FOLIAGE_ARENA_STRIDE 0x08000000ull
 #define FOLIAGE_ARENA_SLOTS 8
 _Static_assert(FOLIAGE_ARENA_BASE + FOLIAGE_ARENA_STRIDE * FOLIAGE_ARENA_SLOTS <= ALIAS_BASE,
                "foliage arena overlaps alias memory");

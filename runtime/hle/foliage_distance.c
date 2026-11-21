@@ -26,6 +26,9 @@ void xcde_foliage_configure(int preset) {
         char *end;
         float requested = strtof(e, &end);
         if (end != e && !*end && isfinite(requested)) {
+            if (requested > XCDE_FOLIAGE_MAX_SCALE)
+                fprintf(stderr, "[foliage] XCDE_GRASS_DISTANCE=%g clamped to %g (Extreme): larger radii overrun the MPF patch block (GitHub #171)\n",
+                        requested, XCDE_FOLIAGE_MAX_SCALE);
             scale = requested < XCDE_FOLIAGE_MIN_SCALE ? XCDE_FOLIAGE_MIN_SCALE : requested > XCDE_FOLIAGE_MAX_SCALE
                 ? XCDE_FOLIAGE_MAX_SCALE : requested;
         }

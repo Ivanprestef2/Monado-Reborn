@@ -75,6 +75,24 @@ above are present in the `v16.0.0` source tree, so a report that survives on
 v16 may be one of the remaining lag-time host reads or a separate vertex-mirror
 issue.
 
+**Follow-up 2026-11-20 — the surviving #171 report was the grass preset, not
+the renderer.** The reporter isolated the spot: the explosions happened only
+with `grass_lod = ultra` (3x) and stopped at `very_high` (2.2x), independently
+of weather, time of day and camera angle. Disabling async, frame lag or the
+vertex cache did not help, which ruled out the two defects above. At 3x the
+game's MPF foliage selector covers nine times the authored area, and the private
+MPF block was allocated at exactly nine times the authored pool with no margin,
+so dense zones such as Gaur Plains had nowhere left to put their patches; the
+resulting out-of-range patch data is the likely source of the geometry the GPU
+draws as stretched vertices.
+
+The private block was then enlarged instead of retiring the preset: the pool is
+now 24x the authored 3.5 MiB (16x for the new 4x coverage plus 50% headroom), the
+bitmap is 512 KiB for the 2000-unit endpoint, and arena slots are 128 MiB. Ultra
+(3x) returns and **Extreme (4x)** is added; a saved index 5 or `extreme` from the
+old 6x preset loads as 4x, and `XCDE_GRASS_DISTANCE` is clamped to 4x. The 3x
+and 4x presets still need in-game verification at the Gaur Plains spot.
+
 Useful diagnostics for a new report, in order of increasing cost:
 
 - `XCDE_ASYNC_RENDER=0` — confirms the async worker is involved (large FPS cost).

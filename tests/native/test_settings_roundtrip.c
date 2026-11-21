@@ -6,6 +6,7 @@
 #include "../../runtime/settings.h"
 #include "../../runtime/quality_policy.h"
 #include "../../runtime/perf_overlay_opts.h"
+#include "../../runtime/hle/foliage_distance.h"
 bool bind_settings_load(const char *key, const char *value) { (void)key; (void)value; return false; }
 void bind_settings_save(FILE *f) { fputs("mouse_look = 1\n", f); }
 int main(int argc, char **argv) {
@@ -23,8 +24,29 @@ int main(int argc, char **argv) {
           "stick_deadzone = 20\neffects_off = 1\nrun_speed = 1.5\nui_scale = 30\nfps_overlay_scale = 300\nfps_overlay_position = bottom-right\n"
           "cheat_damage_dealt = 1\ncheat_damage_dealt_percent = 250\ncheat_exp = 2\ncheat_exp_percent = 1o0\n"
           "cheat_enemy_health = true\ncheat_enemy_health_percent = 5\n"
+          "grass_lod = extreme\n"
           "future_plugin = preserve this\n", f); fclose(f);
     settings_load();
+    assert(g_settings.grass_lod == GRASS_EXTREME);
+    // [XCDE] GitHub #171: the enlarged MPF block supports Ultra (3x) and the new
+    // Extreme (4x); the diagnostic override caps at 4x.
+    assert(grass_lod_parse("ultra") == GRASS_ULTRA);
+    assert(grass_lod_parse("extreme") == GRASS_EXTREME);
+    assert(grass_lod_valid(4) == GRASS_ULTRA && grass_lod_valid(5) == GRASS_EXTREME);
+    assert(grass_lod_valid(GRASS_PRESET_COUNT) == GRASS_DEFAULT);
+    assert(grass_lod_scale(GRASS_ULTRA) == 3.f && grass_lod_scale(GRASS_EXTREME) == 4.f);
+#ifdef _WIN32
+    assert(!_putenv_s("XCDE_GRASS_DISTANCE", "5"));
+#else
+    assert(!setenv("XCDE_GRASS_DISTANCE", "5", 1));
+#endif
+    xcde_foliage_configure(GRASS_EXTREME);
+    assert(xcde_foliage_requested_scale() == 4.f);
+#ifdef _WIN32
+    assert(!_putenv_s("XCDE_GRASS_DISTANCE", ""));
+#else
+    assert(!unsetenv("XCDE_GRASS_DISTANCE"));
+#endif
     assert(g_settings.run_speed == 1.5f);  // [XCDE] GitHub #100
     assert(g_settings.ui_scale == 50);  // [XCDE] GitHub #121: below the minimum, clamped
     assert(g_settings.res_mode == RES_1_5);
@@ -51,6 +73,7 @@ int main(int argc, char **argv) {
     g_settings.cheat_sp = false; g_settings.cheat_sp_percent = 0; g_settings.cheat_no_fall_damage = false; settings_load();
     assert(g_settings.fps_overlay_style == FPS_OVERLAY_SIMPLE);  // [XCDE] GitHub #39
     assert(g_settings.gpu_uuid[0] && g_settings.gpu_index == 1 && g_settings.stick_deadzone == 0);
+    assert(g_settings.grass_lod == GRASS_EXTREME);  // [XCDE] GitHub #171: extreme round-trips
     assert(g_settings.vulkan_api == 12 && !g_settings.fps_overlay && !g_settings.upscaler_auto);
     assert(g_settings.quality_preset==QUALITY_POTATO && g_settings.gpu_performance);
     assert(g_settings.dynamic_min_height==360 && g_settings.dynamic_max_height==540);
