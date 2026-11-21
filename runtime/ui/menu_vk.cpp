@@ -210,7 +210,7 @@ static const char *const k_en[][2] = {
     {"Sin límite", "Unlímited"}, {"FPS (al reiniciar)", "FPS (after a restart)"}, {"V-Sync (con 30 / 60 FPS)", "V-Sync (at 30 / 60 FPS)"},
     {"Volumen", "Volume"}, {"Audio de los vídeos (al reiniciar)", "Video sound (after a restart)"},
     {"Velocidad al correr", "Run speed"}, {"Normal (x1)", "Normal (x1)"}, {"Rápida (x1.5)", "Fast (x1.5)"},
-    {"Muy rápida (x2)", "Very fast (x2)"}, {"Controles", "Controls"}, {"Trucos", "Cheats"},
+    {"Muy rápida (x2)", "Very fast (x2)"}, {"Variante anterior (más divertida, experimental)", "Old variant (more fun, experimental)"}, {"Controles", "Controls"}, {"Trucos", "Cheats"},
     {"La asignación de teclas y botones se cambia en el launcher (Play Monado.bat), pestaña Controles.",
      "Keys and buttons are remapped in the launcher, Controls tab."},
     {"GPU / Vulkan", "GPU / Vulkan"}, {"Adaptador Vulkan activo", "Active Vulkan adapter"},
@@ -537,6 +537,16 @@ static void ui(void) {
             ImGui::SetItemTooltip("%s", g_settings.ui_lang
                 ? "Multiplies the controlled character's movement speed (in battle too). The game still resolves the ground and collisions."
                 : "Multiplica la velocidad del personaje controlado (también en combate). El juego sigue resolviendo el suelo y las colisiones.");
+            ImGui::Checkbox(T("Variante anterior (más divertida, experimental)"), &g_settings.run_speed_legacy);  // [XCDE] GitHub #100
+            ImGui::SetItemTooltip("%s", g_settings.ui_lang
+                ? "The more fun variant: moves the leader's position instead of the game's movement rate\n"
+                  "(the first version, PR #135).\n"
+                  "It can stop applying after a story scene. It is experimental: it can also break movement or\n"
+                  "collisions in some areas; kept for comparison or if the normal variant fails."
+                : "La variante más divertida: mueve la posición del líder en lugar de la tasa de movimiento del\n"
+                  "juego (la primera versión, PR #135).\n"
+                  "Puede dejar de aplicarse tras una escena de historia. Es experimental: también puede romper el\n"
+                  "movimiento o las colisiones en algunas zonas; se conserva para comparar o si la variante normal falla.");
             if (monado_cheat_controls(&g_settings, g_settings.ui_lang == 1, true)) xcde_cheats_publish(&g_settings);
             ImGui::EndTabItem();
         }

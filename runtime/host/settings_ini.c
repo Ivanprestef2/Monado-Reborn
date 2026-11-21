@@ -135,6 +135,7 @@ void settings_load(void) {
             float x = (float)atof(v);
             g_settings.run_speed = x < 1.0f ? 1.0f : x > 2.0f ? 2.0f : x;
         }
+        else if (!strcmp(k, "run_speed_legacy")) g_settings.run_speed_legacy = xcde_cheat_enabled(v);  // [XCDE] GitHub #100
 #define LOAD_CHEAT(name, minimum) \
         else if (!strcmp(k, "cheat_" #name)) g_settings.cheat_##name = xcde_cheat_enabled(v); \
         else if (!strcmp(k, "cheat_" #name "_percent")) g_settings.cheat_##name##_percent = xcde_cheat_percent(v, minimum);
@@ -213,6 +214,7 @@ void settings_save(void) {
     gfx_save(f, &g_settings.graphics);  // [XCDE]
     fprintf(f, "party_switch = %d\n", g_party_switch);
     fprintf(f, "run_speed = %.2f\n", g_settings.run_speed);
+    fprintf(f, "run_speed_legacy = %d\n", g_settings.run_speed_legacy);
 #define SAVE_CHEAT(name, minimum) fprintf(f, "cheat_" #name " = %d\ncheat_" #name "_percent = %d\n", \
         g_settings.cheat_##name, xcde_cheat_percent_bound(g_settings.cheat_##name##_percent, minimum));
     XCDE_CHEAT_MULTIPLIERS(SAVE_CHEAT)

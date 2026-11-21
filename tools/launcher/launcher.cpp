@@ -175,6 +175,7 @@ struct Cfg {
     bool quickstep_slot = false; // dedicated Quick Step gem slot (Monado II port), runtime/hle/quickstep_*.c
     bool save_slots_99 = true;   // 99 manual save slots (Monado II port), runtime/hle/expanded_saves.c; false = native
     float run_speed = 1.0f;     // GitHub #100: player movement multiplier (1, 1.5, 2), runtime/hle/party.c
+    bool run_speed_legacy = false;  // GitHub #100: old position-delta variant instead of the game's own rate
     Settings cheats = {};       // [XCDE] Monado II cheats: only the cheat_* fields are used; the controls, keys and
                                 // validation are the game's (runtime/cheats_options.h)
     bool show_fps = false;
@@ -430,6 +431,17 @@ static const char *const k_en[][2] = {
      "Multiplies the controlled character's movement speed (in battle too). The game still\n"
      "resolves the ground and collisions; animations keep their original timing.\n"
      "It can also be changed in the game, in the menu's Cheats tab."},
+    {"Variante anterior (más divertida, experimental)", "Old variant (more fun, experimental)"},
+    {"La variante más divertida: mueve la posición del líder en lugar de la tasa de movimiento del\n"
+     "juego (la primera versión, PR #135). Funciona en el campo, pero el juego puede reescribir la posición tras\n"
+     "una escena de historia y la velocidad deja de aplicarse. Es experimental: también puede\n"
+     "romper el movimiento o las colisiones en algunas zonas. Se aplica al iniciar el juego;\n"
+     "también se puede cambiar en el menú F1.",
+     "The more fun variant: moves the leader's position instead of the game's movement rate\n"
+     "(the first version, PR #135). It works in the field, but the game can rewrite the position after a story\n"
+     "scene and the speed stops applying. It is experimental: it can also break movement or\n"
+     "collisions in some areas. Applies when the game starts; it can also be changed in the\n"
+     "F1 menu."},
     {"Vibración del mando", "Gamepad vibration"},
     {"Activa el motor del mando cuando el juego manda vibración (por ejemplo en combate).\n"
      "También se puede cambiar dentro del juego, en el menú, pestaña Controles.",
@@ -637,6 +649,7 @@ static void load() {
         else if (!strcmp(k, "quickstep_slot")) g.quickstep_slot = !strcmp(v, "1") || !strcmp(v, "true");
         else if (!strcmp(k, "save_slots_99")) g.save_slots_99 = !strcmp(v, "1") || !strcmp(v, "true");
         else if (!strcmp(k, "run_speed")) { float x = (float)atof(v); g.run_speed = x < 1.0f ? 1.0f : x > 2.0f ? 2.0f : x; }
+        else if (!strcmp(k, "run_speed_legacy")) g.run_speed_legacy = !strcmp(v, "1") || !strcmp(v, "true");
         // [XCDE] Monado II cheats: the same keys and value rules as the game (runtime/host/settings_ini.c)
 #define LOAD_CHEAT(name, minimum) \
         else if (!strcmp(k, "cheat_" #name)) g.cheats.cheat_##name = xcde_cheat_enabled(v); \
@@ -729,6 +742,7 @@ static bool save() {
     fprintf(f, "quickstep_slot = %d\n", g.quickstep_slot);
     fprintf(f, "save_slots_99 = %d\n", g.save_slots_99);
     fprintf(f, "run_speed = %.2f\n", g.run_speed);
+    fprintf(f, "run_speed_legacy = %d\n", g.run_speed_legacy);
     // [XCDE] Monado II cheats: out-of-range multipliers are written as 1.00x, as the game does (settings_ini.c)
 #define SAVE_CHEAT(name, minimum) fprintf(f, "cheat_" #name " = %d\ncheat_" #name "_percent = %d\n", \
         g.cheats.cheat_##name, xcde_cheat_percent_bound(g.cheats.cheat_##name##_percent, minimum));
@@ -2216,6 +2230,12 @@ static void tab_cheats() {
     ImGui::SetItemTooltip(T("Multiplica la velocidad del personaje controlado (también en combate). El juego sigue\n"
                             "resolviendo el suelo y las colisiones; las animaciones mantienen su ritmo original.\n"
                             "También se puede cambiar dentro del juego, en el menú, pestaña Trucos."));
+    ImGui::Checkbox(T("Variante anterior (más divertida, experimental)"), &g.run_speed_legacy);  // [XCDE] GitHub #100: PR #135's variant
+    ImGui::SetItemTooltip(T("La variante más divertida: mueve la posición del líder en lugar de la tasa de movimiento del\n"
+                            "juego (la primera versión, PR #135). Funciona en el campo, pero el juego puede reescribir la posición tras\n"
+                            "una escena de historia y la velocidad deja de aplicarse. Es experimental: también puede\n"
+                            "romper el movimiento o las colisiones en algunas zonas. Se aplica al iniciar el juego;\n"
+                            "también se puede cambiar en el menú F1."));
     // [XCDE] Monado II cheats, with the F1 menu's own controls (runtime/ui/cheats_controls.h): Combat, Rewards and
     // Exploration. live = false: the game is not running, so they apply at the next launch.
     monado_cheat_controls(&g.cheats, g.ui_lang != 0, false);

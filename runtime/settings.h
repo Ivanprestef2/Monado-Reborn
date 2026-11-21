@@ -62,6 +62,7 @@ typedef struct {
     bool dpad_move;      // the d-pad (and arrow keys) move Link like the stick
     bool move_360;       // analog movement in any direction (the game snaps the stick to 8): runtime/hle/qol.c
     float run_speed;     // [XCDE] GitHub #100: player movement multiplier (1.0 original, 1.5, 2.0): runtime/hle/party.c
+    bool run_speed_legacy;  // [XCDE] GitHub #100: old position-delta variant (run_speed_tick) instead of the game's rate
     bool blur_removal;   // no tilt-shift blur at the top / bottom of the screen
     bool hide_hero_icon; // no Hero Mode icon on the HUD
     int ui_scale;        // [XCDE] GitHub #121: HUD size in % of the game's (50..100; xcde.ini ui_scale): runtime/ui_scale.h

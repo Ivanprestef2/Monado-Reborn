@@ -24,7 +24,7 @@ int main(int argc, char **argv) {
           "gpu_gpl = off\ngpu_memory_budget = 0\ngpu_preset = performance\ngpu_keep_heavy = 1\n"
           "occlusion = on\namd_fix = off\nsession_fix = off\n"
           "vulkan_api = 1.2\nfps_overlay = 0\nfps_overlay_style = simple\nupscaler = auto\n"
-          "stick_deadzone = 20\neffects_off = 1\nrun_speed = 1.5\nui_scale = 30\nfps_overlay_scale = 300\nfps_overlay_position = bottom-right\n"
+          "stick_deadzone = 20\neffects_off = 1\nrun_speed = 1.5\nrun_speed_legacy = true\nui_scale = 30\nfps_overlay_scale = 300\nfps_overlay_position = bottom-right\n"
           "window = 1920x1080\n"
           "cheat_damage_dealt = 1\ncheat_damage_dealt_percent = 250\ncheat_exp = 2\ncheat_exp_percent = 1o0\n"
           "cheat_enemy_health = true\ncheat_enemy_health_percent = 5\ncheat_high_jump = true\n"
@@ -52,6 +52,7 @@ int main(int argc, char **argv) {
     assert(!unsetenv("XCDE_GRASS_DISTANCE"));
 #endif
     assert(g_settings.run_speed == 1.5f);  // [XCDE] GitHub #100
+    assert(g_settings.run_speed_legacy);  // [XCDE] GitHub #100: PR #135's position-delta variant
     assert(g_settings.ui_scale == 50);  // [XCDE] GitHub #121: below the minimum, clamped
     assert(g_settings.res_mode == RES_1_5);
     assert(g_window_w == 1920 && g_window_h == 1080);  // [XCDE] window size chosen in the launcher / F1 menu
@@ -96,9 +97,11 @@ int main(int argc, char **argv) {
     char data[8192] = {0}; f = fopen(argv[1], "r"); assert(f);
     assert(fread(data, 1, sizeof data - 1, f)); fclose(f);
     assert(strstr(data, "future_plugin = preserve this"));
-    g_settings.res_mode = RES_1_5; g_settings.run_speed = 2.0f; g_settings.ui_scale = 75; g_settings.fps_overlay_scale = 80; g_settings.fps_overlay_pos = PERF_POS_TOP_RIGHT; settings_save();
-    g_settings.res_mode = RES_MATCH; g_settings.run_speed = 1.0f; g_settings.ui_scale = 100; g_settings.fps_overlay_scale = 0; g_settings.fps_overlay_pos = 0; settings_load();
+    assert(strstr(data, "run_speed_legacy = 1"));  // [XCDE] GitHub #100: the variant is written explicitly
+    g_settings.res_mode = RES_1_5; g_settings.run_speed = 2.0f; g_settings.run_speed_legacy = true; g_settings.ui_scale = 75; g_settings.fps_overlay_scale = 80; g_settings.fps_overlay_pos = PERF_POS_TOP_RIGHT; settings_save();
+    g_settings.res_mode = RES_MATCH; g_settings.run_speed = 1.0f; g_settings.run_speed_legacy = false; g_settings.ui_scale = 100; g_settings.fps_overlay_scale = 0; g_settings.fps_overlay_pos = 0; settings_load();
     assert(g_settings.res_mode == RES_1_5 && g_settings.run_speed == 2.0f);  // [XCDE] GitHub #100
+    assert(g_settings.run_speed_legacy);  // [XCDE] GitHub #100: the old variant round-trips
     assert(g_settings.ui_scale == 75);  // [XCDE] GitHub #121
     assert(g_settings.fps_overlay_scale == 80 && g_settings.fps_overlay_pos == PERF_POS_TOP_RIGHT);  // GitHub #147
     // [XCDE] RCAS strength: unset stays "default" (FSR 1 0.9 / FSR 3 0.3); an explicit value round-trips, 0 = off

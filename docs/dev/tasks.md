@@ -1509,7 +1509,10 @@ Detalle: `docs/PERFORMANCE_UI.md`. Evidencia: `docs/evidence/2026-11-04-performa
 - [x] T270 **GitHub #100: modificador de velocidad al correr (x1.5 / x2).** xc2-recomp no lo tiene (sólo una tecla de
   caminar que baja el stick del teclado y cheats genéricos); Monado-II tiene la ranura Quick Step extra, pero usa el
   tope normal del juego (~+25 %) y no sirve para x1.5/x2. `run_speed` en `xcde.ini` (`1.00`, `1.50`, `2.00`), combo en
-  la pestaña Trucos del launcher y del menú F1; `XCDE_RUN_SCALE` queda como override de tests.
+  la pestaña Trucos del launcher y del menú F1; `XCDE_RUN_SCALE` queda como override de tests. La variante anterior
+  (la primera versión de PR #135) sigue disponible como opción: `run_speed_legacy = 0/1` en `xcde.ini`, casilla
+  «Variante anterior (más divertida, experimental)» en Trucos (launcher y F1), con aviso de que puede romper el
+  movimiento o las colisiones; `XCDE_RUN_LEGACY=0/1` como override de tests.
   La primera versión (`run_speed_tick`) sumaba el delta horizontal a la posición del líder; funcionaba en el campo,
   pero tras una escena de historia el juego reescribe esa posición desde su estado de física y la velocidad dejaba de
   aplicarse. Ahora se parchea el propio cálculo del juego (`f_70004463b0`, `fmul s0, s8, s0` en `0x7000446520`): el
@@ -1521,10 +1524,12 @@ Detalle: `docs/PERFORMANCE_UI.md`. Evidencia: `docs/evidence/2026-11-04-performa
   de campo (el objeto del personaje +0x1908, refrescado por `run_speed_leader`) o con la clase del controlador del
   jugador (0x7000b591b8; los seguidores/NPCs usan 0x7000b58660), que sigue al líder cuando el cambio de historia del
   prólogo deja atrás el grupo de campo. No escribe posiciones, así que no necesita las guardas de menú/escena de la
-  versión anterior. Se elimina `run_speed_tick`; el escáner de party vuelve a arrancar con esta opción, sólo para
-  identificar al líder.
-  Pruebas: build Windows; el ajuste no cambia (`test_settings_roundtrip.c` cubre 1.5 de entrada y 2.0 tras
-  guardar/cargar); partida nueva 2026-11-18: el registro muestra `[run] leader game speed x2.00 (setting 2.00)`, la
+  versión anterior. `run_speed_tick` queda detrás de `run_speed_legacy` (apagada por defecto) y `xcde_run_speed_mul`
+  no escala cuando está activa, para no multiplicar dos veces; el escáner de party arranca cuando `run_speed` es mayor
+  que 1, sea cual sea la variante, sólo para identificar al líder.
+  Pruebas: build Windows; el ajuste no cambia (`test_settings_roundtrip.c` cubre 1.5 de entrada, 2.0 tras
+  guardar/cargar y el round-trip de `run_speed_legacy`); partida nueva 2026-11-18: el registro muestra
+  `[run] leader game speed x2.00 (setting 2.00)`, la
   velocidad funciona desde el prólogo (Dunban) y sigue tras el cambio de historia a Shulk (antes se perdía ahí); sólo
   se escala el controlador del líder, seguidores y NPCs conservan la tasa del juego.
 

@@ -33,7 +33,8 @@ while the option is off the jump keeps its native 1.0 scale.
 `XCDE_CHEAT_TRACE=1` logs each scaled hit, landing, jump-height scale, award, gold gain and enemy maximum HP as a
 `[cheats]` line, with native and scaled values. With the cheats off it still logs native hits and landings at 1x.
 
-Monado II's movement-speed cheat was not ported: this recomp already has its own run speed (T270, F1 → Cheats).
+Monado II's movement-speed cheat was not ported: this recomp already has its own run speed (T270, F1 → Cheats), with
+the first (position-based) implementation kept as an opt-in *Old variant (more fun, experimental)* for comparison; it can break movement or collisions in some areas.
 
 ## Exit to desktop
 

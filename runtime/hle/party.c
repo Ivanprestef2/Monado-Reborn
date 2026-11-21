@@ -394,14 +394,18 @@ static void party_probe(Cpu *c, uint64_t frame) {
     }
 }
 
-// [XCDE] run speed multiplier (GitHub #100). The game's own movement update (f_70004463b0, see the patch in
-// games/xcde/patches.py) computes the max horizontal velocity rate as `state * [movement + 0x11c]`; scale that
-// product so the controlled leader moves faster with its own collisions, ground handling and movement. The same
-// function also runs for followers and NPCs, so run_speed_leader() locates the field leader (the same slot_entity
-// path the earlier position version used) and caches its controller object; the helper also accepts the player
+// [XCDE] run speed multiplier (GitHub #100), two variants. The game's own movement update (f_70004463b0, see the patch
+// in games/xcde/patches.py) computes the max horizontal velocity rate as `state * [movement + 0x11c]`; the default
+// variant scales that product so the controlled leader moves faster with its own collisions, ground handling and
+// movement. The same function also runs for followers and NPCs, so run_speed_leader() locates the field leader (the same
+// slot_entity path the legacy variant uses) and caches its controller object; the helper also accepts the player
 // controller class as a fallback when a story switch leaves the field group behind. The patch passes the controller
 // being updated (x20), so only the leader's controller is scaled. No positions are written; the game computes the
 // movement itself.
+// The legacy variant (run_speed_tick, xcde.ini run_speed_legacy) is the first implementation from PR #135: it adds the
+// extra horizontal distance to the leader's entity and movement positions. It works in the field, but after a story
+// scene the game rewrites those positions from its physics state and the multiplier stops applying there, so it is an
+// opt-in comparison/fallback. Only one variant scales at a time.
 // Off by default: XCDE_RUN_SCALE (1.0 = original, for tests), xcde.ini run_speed for players.
 static float run_scale(void) {
     static int init;
@@ -417,6 +421,62 @@ static float run_scale(void) {
         }
     }
     return env_set ? env : g_settings.run_speed;
+}
+
+// [XCDE] GitHub #100: the legacy position-delta variant (xcde.ini run_speed_legacy, Cheats tab). XCDE_RUN_LEGACY=0/1
+// overrides the setting for tests.
+static bool run_legacy(void) {
+    static int init;
+    static bool env, env_set;
+    if (!init) {
+        init = 1;
+        const char *e = getenv("XCDE_RUN_LEGACY");
+        if (e) {
+            char *end = NULL;
+            long x = strtol(e, &end, 10);
+            if (end != e) { env = x != 0; env_set = true; }
+        }
+    }
+    return env_set ? env : g_settings.run_speed_legacy;
+}
+
+// The legacy variant: the game's movement is collision-resolved before this runs (the pad read happens at the start of
+// a frame), so the extra distance is applied to the position the game will move from; its own collision/ground handling
+// still runs. Only the leader's entity is moved, and the game's rate (xcde_run_speed_mul) is left alone while this is on.
+static void run_speed_tick(Cpu *c, uint64_t frame) {
+    float scale = run_scale();
+    if (!(scale > 1.0f) || !run_legacy()) return;
+    static int reported;
+    if (!reported) { reported = 1; LOG("[run] movement (legacy position) x%.2f (setting %.2f)\n", scale, g_settings.run_speed); }
+    Found f;
+    found_get(&f);
+    if (!player_in_control(found_one(&f, K_PLAYER)) || cutscene_playing(frame)) return;
+    uint64_t fo = found_one(&f, K_FIELD);
+    uint64_t g = fo ? field_group(c, fo + 0x20) : 0;
+    if (!g) return;
+    uint64_t obj = 0;
+    uint64_t ent = slot_entity(c, fo, g, 0, &obj, NULL);
+    if (!ent) return;
+    volatile float *pos = (volatile float *)(uintptr_t)(ent + 0x110);
+    volatile float *mpos = (volatile float *)(uintptr_t)(obj + 0x1a38 + 0x50);
+    static uint64_t last_ent;
+    static float last[3];
+    if (last_ent == ent) {
+        float dx = pos[0] - last[0], dy = pos[1] - last[1], dz = pos[2] - last[2];
+        // (a teleport / load / warp: leave it alone, do not multiply the jump)
+        if (fabsf(dx) < 2.0f && fabsf(dy) < 2.0f && fabsf(dz) < 2.0f) {
+            // Horizontal only: jumping/falling keeps the game's own gravity and landing.
+            pos[0] = last[0] + dx * scale;
+            pos[2] = last[2] + dz * scale;
+            // The movement object owns the position the game moves from next frame; its ground/collision snaps follow.
+            mpos[0] = pos[0], mpos[2] = pos[2];
+            volatile float *low = (volatile float *)(uintptr_t)(obj + 0x1a38 + 0x78);
+            volatile float *high = (volatile float *)(uintptr_t)(obj + 0x1a38 + 0xa0);
+            low[0] = pos[0], low[2] = pos[2], high[0] = pos[0], high[2] = pos[2];
+        }
+    }
+    last_ent = ent;
+    last[0] = pos[0], last[1] = pos[1], last[2] = pos[2];
 }
 
 // The field leader (slot 0 of the field group) whose update f_70004463b0 handles. It runs every frame and only reads:
@@ -452,7 +512,7 @@ uint32_t xcde_run_speed_mul(uint32_t rate, uint32_t speed, uint64_t obj) {
     memcpy(&y, &speed, 4);
     out = x * y;
     bool leader = obj && (obj == g_run_leader || *(volatile uint64_t *)(uintptr_t)obj == PLAYER_CONTROLLER_VTABLE);
-    if (scale > 1.0f && leader) {  // (also rejects a NaN setting: no movement change)
+    if (scale > 1.0f && !run_legacy() && leader) {  // (also rejects a NaN setting; the legacy variant moves positions)
         if (!reported) { reported = 1; LOG("[run] leader game speed x%.2f (setting %.2f)\n", scale, g_settings.run_speed); }
         out *= scale;
     }
@@ -1136,6 +1196,7 @@ void party_game_tick(Cpu *c, uint64_t frame) {
     ent_scan(c, frame);
     debug_fixed(c, frame);
     debug_tour(c, frame);
+    run_speed_tick(c, frame);  // [XCDE] GitHub #100: only with the legacy variant on (run_legacy)
     run_speed_leader(c);
     extern bool g_party_switch;
     static uint64_t at[16];
