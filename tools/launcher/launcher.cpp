@@ -1985,8 +1985,8 @@ static void tab_graphics() {
     monado_combo(g.ui_lang ? "Grass distance" : "Distancia de la hierba", &g.grass_lod,
                  g.ui_lang ? grass_lod_labels : grass_lod_labels_es, GRASS_PRESET_COUNT);
     ImGui::SetItemTooltip("%s", g.ui_lang
-        ? "Keeps grass visible farther away. Higher settings cost FPS. Original keeps High's nearby detail at the original distance; Low halves reach. Also live in F1."
-        : "Mantiene la hierba visible más lejos. Los valores altos cuestan FPS. Original conserva el detalle cercano de Alta a la distancia original; Baja reduce el alcance a la mitad. También en vivo en F1.");
+        ? "Keeps grass visible farther away. Higher settings cost FPS. Original keeps High's nearby detail at the original distance; Low halves reach. Ultra (3x) and Extreme (4x) draw much more grass; Extreme is the maximum. Also live in F1."
+        : "Mantiene la hierba visible más lejos. Los valores altos cuestan FPS. Original conserva el detalle cercano de Alta a la distancia original; Baja reduce el alcance a la mitad. Ultra (3x) y Extrema (4x) dibujan mucha más hierba; Extrema es el máximo. También en vivo en F1.");
     monado_gfx_group(&g.graphics, gfx_ui_detail, en, 260 * g_scale);
     ImGui::SeparatorText(en ? "Effects" : "Efectos");
     ImGui::Checkbox(T("Profundidad de campo (desenfoque del juego)"), &g.dof);

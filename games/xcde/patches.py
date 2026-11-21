@@ -211,9 +211,10 @@ PATCHES[0x700067eae4] = Patch(0x9401693b, _foliage_live_materials, 'T-FOLIAGE-LI
 
 
 # T-FOLIAGE-STREAMING: high presets exhausted the authored 3.5 MiB patch pool.
-# Provision the complete contiguous native allocation for supported 3x live coverage.
-# Keep the bitmap, free-list pool, metadata and scratch/table offsets coherent;
-# no live pool is resized, reset or freed outside the guest's normal lifetime.
+# Provision the complete contiguous native allocation for 4x coverage (16x the
+# authored area) with 50% pool headroom and a 2x bitmap for dense zones. Keep the
+# bitmap, free-list pool, metadata and scratch/table offsets coherent; no live
+# pool is resized, reset or freed outside the guest's normal lifetime.
 def _foliage_pool(reg, part, base=False):
     def emit(gen, addr):
         ins = gen.lift(addr)
@@ -234,8 +235,8 @@ for _site, _word, _reg, _part, _base in (
                            'coherent MPF bitmap/pool allocation for all live grass presets')
 
 
-# The game's fixed map heap cannot hold 3x coverage. Own a bounded private
-# guest-address arena and release it at the original MPF destructor boundary.
+# The game's fixed map heap cannot hold the extended coverage. Own a bounded
+# private guest-address arena and release it at the original MPF destructor boundary.
 def _foliage_allocate(gen, addr):
     return ('{ extern uint64_t xcde_foliage_pool_alloc(uint64_t owner); '
             'c->x[30]=0x7000687524ull; c->x[0]=xcde_foliage_pool_alloc(c->x[19]); }')

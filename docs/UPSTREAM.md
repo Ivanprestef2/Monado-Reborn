@@ -98,3 +98,25 @@ reallocated image, exposing uninitialized VRAM (decoding as tiled magenta/green/
   tracks manual `XCDE_TMP_LOD_BIAS` overrides.
 - `tests/native/test_tex_resize.c`, `scripts/native_tests.sh`, `tests/unit/test_vk_source_contracts.py`: unit and
   source-contract coverage for resize preservation, color render-target initialization, and material-only LOD bias.
+
+## Grass distance: Ultra restored, Extreme added (GitHub #171, 2026-11-20)
+
+The grass draw-distance presets from PR #46 scale the game's own MPF foliage selector. The 3x **Ultra** preset
+covers nine times the authored area, and the first private MPF block was sized at exactly 9x the authored pool, so
+in dense zones such as Gaur Plains it had no margin and corrupt patch data was drawn as exploded grass vertices.
+Rather than retire the preset, the private block now supports **Extreme (4x)** as well:
+
+- `runtime/hle/foliage_distance.h`: the pool is 24x the authored 3.5 MiB (16x for 4x coverage plus 50% headroom),
+  the bitmap doubles to 512 KiB for the 2000-unit endpoint, and `XCDE_FOLIAGE_MAX_SCALE` is 4. The
+  `XCDE_GRASS_DISTANCE` diagnostic override is clamped to 4x with a warning.
+- `runtime/hle/foliage_pool.c`: arena slots grow from 32 MiB to 128 MiB (eight maps still fit the 1.5 GiB window).
+  Each live foliage map commits about 85 MiB of guest pages instead of 32 MiB; the 8-slot cap is unchanged.
+- `runtime/grass_lod.h`: **Ultra (3x)** returns and **Extreme (4x)** is added; a saved index 5 or `extreme` from
+  the retired 6x preset now loads as 4x.
+- F1 and the launcher list both presets; `tests/native/test_settings_roundtrip.c` and
+  `tests/native/test_foliage_distance.c` cover the new scales, the 2000-unit bitmap worst case and the clamped
+  diagnostic override.
+
+The 3x/4x presets still need in-game verification at the Gaur Plains spot that produced #171.
+
+Diagnostics and reporter context: [summary.md](evidence/2026-11-10-vertex-corruption/summary.md).
