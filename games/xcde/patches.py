@@ -1113,8 +1113,7 @@ def _cutscene_discrete_key_s0(gen, addr):
     call = _native_call(gen, addr, 0x70005a98e0)
     return ('{ extern _Bool xcde_cutscene_unquantize(void); '
             'if (xcde_cutscene_unquantize()) { '
-            'FP_SETS(0, frint_s(c, VSF32(0), 2)); } ' + call + '}')
-
+            'FP_SETS(0, frint_s(c, VSF32(0), 2)); } } ' + call)
 
 def _cutscene_curve_lerp_uncompressed(gen, addr):
     original = _plain(gen, addr)
