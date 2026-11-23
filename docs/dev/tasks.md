@@ -1689,7 +1689,8 @@ Detalle: `docs/PERFORMANCE_UI.md`. Evidencia: `docs/evidence/2026-11-04-performa
   reporter's manual save and the maintainer's settings: at 60 FPS the snap-track time bypass
   (`0x700050c374`, `_cutscene_track_unquantize`) misses the exact 30 Hz key times and the cutscene track
   that enables the Monado's glow never triggers; `XCDE_CUTSCENE_UNQUANTIZE=0` (or `cutscenes = 30`)
-  restores it, and a binary-patched build with only gate 3 requantized restores it too. Fix: drop the third
-  bypass in `games/xcde/patches.py` (keep the clock and camera gates), regenerate and re-verify #181
-  smoothness on the new build. Workaround for players: `cutscenes = 30` / `XCDE_CUTSCENE_UNQUANTIZE=0`.
-  Evidence: [summary.md](../evidence/2026-11-23-issue-216/summary.md).
+  restores it, and a binary-patched build with only gate 3 requantized restores it too. Fix applied: the third
+  bypass is removed from `games/xcde/patches.py` (the clock and camera gates stay). Pending: regenerate the lifted code
+  in the main checkout and re-verify #181 smoothness on the regenerated build. Workaround for players until then:
+  `cutscenes = 30` / `XCDE_CUTSCENE_UNQUANTIZE=0`. Evidence:
+  [summary.md](../evidence/2026-11-23-issue-216/summary.md).

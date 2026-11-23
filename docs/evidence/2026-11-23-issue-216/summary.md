@@ -134,6 +134,7 @@ interpolation) do not affect it. This also explains the reporter's results acros
 frame rate, not on DLSS/FSR 3/bilinear or frame generation.
 
 - Workaround for players: launcher "Cutscenes: 30 fps" (`cutscenes = 30`) or `XCDE_CUTSCENE_UNQUANTIZE=0`.
-- Fix: keep gates 1 and 2 (the visible #181 smoothness improvements) and stop bypassing gate 3 in
-  `games/xcde/patches.py`; regenerate the lifted code and re-verify #181 (60 FPS cutscene pose smoothness) on the new
-  build. Not changed in this report's PR, which covers the exit crash only.
+- Fix (applied in `games/xcde/patches.py`): the third bypass is removed, so gates 1 and 2 keep the visible #181
+  smoothness while snap tracks stay on the 30 Hz grid. **Pending:** regenerate the lifted code from the main checkout
+  and re-verify #181 (60 FPS cutscene pose smoothness, T224's frame-pair measurement) on the regenerated build before
+  shipping.

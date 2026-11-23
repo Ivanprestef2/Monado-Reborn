@@ -173,5 +173,12 @@ of `tasks.md`; do not move them, they are the record.
   generation, jitter/HUD snapshot) is out, and the exit crash reproduces only when DLSS is enabled, which is the
   control for the fix above. The triage note records both runs.
 
+- The missing FX is the **#181 cutscene unquantize's third gate** (2026-11-23, found with the reporter's save): at more
+  than 30 FPS the snap-track time bypass misses the exact 30 Hz key times and the cutscene track that enables the
+  Monado's ether glow / ring lens never triggers. `XCDE_CUTSCENE_UNQUANTIZE=0` and a binary-patched build with only that
+  gate requantized both restore it; occlusion was ruled out. Fix: the third bypass is removed from
+  `games/xcde/patches.py` (the clock and camera gates keep the #181 smoothness); regeneration and the #181 re-measure
+  are pending. Workaround meanwhile: `cutscenes = 30` in the launcher.
+
 Triage of both symptoms, the minidump findings and the A/B table:
 [summary.md](../evidence/2026-11-23-issue-216/summary.md).

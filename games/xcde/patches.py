@@ -1052,9 +1052,15 @@ for _site, (_word, _emit, _note) in QUICKSTEP_STATS_UI_PATCHES.items():
 #     and rounds to an integer 30 Hz frame whenever playback speed == 1.0f.
 #  3. f_700050c150 (0x700050c374): sequence track time lookup rounds local track time to 1/30 s
 #     when the track's snap flag (+0x220) is set.
-# When cutscenes run above 30 fps (cutscenes = same), bypass all three so cameras and character
-# poses evaluate smoothly every presented frame at identical playback speed. At 30 fps (and in
-# cutscenes = 30 / 30fg) xcde_cutscene_unquantize() returns false so 30 fps stays bit-identical.
+# When cutscenes run above 30 fps (cutscenes = same), gates 1 and 2 are bypassed so cameras and
+# character poses evaluate smoothly every presented frame at identical playback speed. At 30 fps
+# (and in cutscenes = 30 / 30fg) xcde_cutscene_unquantize() returns false so 30 fps stays
+# bit-identical.
+# Gate 3 is NOT bypassed (GitHub #216): snap-flagged tracks are authored on the exact 30 Hz grid
+# and the sequence evaluator matches their key / trigger times against it. Feeding it continuous
+# time missed those exact times, so cutscene tracks that switch effects on (the Monado's ether
+# glow / ring lens, the sparkle emitters) never fired and the FX were missing in every 60 FPS
+# cutscene. The clock and camera gates above keep the smoothness of #181.
 def _cutscene_unquantize(gen, addr):
     original = _plain(gen, addr)
     return ('{ extern _Bool xcde_cutscene_unquantize(void); '
@@ -1067,18 +1073,10 @@ def _cutscene_cam_interp(gen, addr):
             'if (!xcde_cutscene_unquantize() && COND_EQ(c)) goto L_70004f5814; }')
 
 
-def _cutscene_track_unquantize(gen, addr):
-    original = _plain(gen, addr)
-    return ('{ extern _Bool xcde_cutscene_unquantize(void); '
-            'if (xcde_cutscene_unquantize()) goto L_700050c398; } ' + original)
-
-
 PATCHES[0x70004e6b9c] = Patch(0x1e2c1800, _cutscene_unquantize, 'T224',
                               'fdiv s0, s0, s12 - skip 30 Hz cutscene clock quantization above 30 fps')
 PATCHES[0x70004f55f8] = Patch(0x540010e0, _cutscene_cam_interp, 'T224',
                               'b.eq L_70004f5814 - use built-in sub-frame camera lerp+slerp above 30 fps')
-PATCHES[0x700050c374] = Patch(0x1e201901, _cutscene_track_unquantize, 'T224',
-                              'fdiv s1, s8, s0 - skip 30 Hz sequence track time quantization above 30 fps')
 
 # [XCDE] GitHub #179: volumetric cloud scroll speed above 30 FPS.
 # f_700062f860 (ml::Scn::update) passes Scene+0x3848 (Scene+0x37d4 * Scene+0x3844)
