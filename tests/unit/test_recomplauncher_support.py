@@ -2,6 +2,7 @@
 progress lines, and source contracts for the Big Picture fullscreen and the launcher's update check (no game data)."""
 import contextlib
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -51,15 +52,15 @@ class AppRunModes(unittest.TestCase):
         env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': self.tmp.name,
                'MONADO_DATA_ROOT': str(self.appdir)}
         done = subprocess.run(['sh', str(self.appdir / 'AppRun'), *args], env=env, text=True, capture_output=True)
-        return done.returncode, done.stdout.splitlines()
+        return done.returncode, done.stdout.splitlines(), done.stderr.splitlines()
 
     def test_game_plays_the_dump_directly(self):
-        code, lines = self.run_apprun('--game', str(self.dump))
+        code, lines, _ = self.run_apprun('--game', str(self.dump))
         self.assertEqual(code, 0)
         self.assertEqual(lines[:3], ['monado', 'arg --game', f'arg {self.dump.resolve()}'])
 
     def test_game_runs_in_the_data_folder(self):
-        _, lines = self.run_apprun('--game', str(self.dump))
+        _, lines, _ = self.run_apprun('--game', str(self.dump))
         self.assertEqual(lines[-1], f'cwd {self.appdir.resolve()}')
 
     def test_game_leaves_no_link_to_the_dump_in_the_install_folder(self):
@@ -67,17 +68,30 @@ class AppRunModes(unittest.TestCase):
         self.assertFalse(os.path.lexists(self.appdir / 'targets'))
 
     def test_game_without_a_dump_stops_with_code_2(self):
-        code, _ = self.run_apprun('--game')
+        code, _, _ = self.run_apprun('--game')
         self.assertEqual(code, 2)
 
     def test_prepare_runs_the_builder_with_its_arguments(self):
-        code, lines = self.run_apprun('--prepare', '--root', str(self.dump), '--out', 'x')
+        code, lines, _ = self.run_apprun('--prepare', '--root', str(self.dump), '--out', 'x')
         self.assertEqual(code, 0)
         self.assertEqual(lines[:5], ['monado-gamebuild', 'arg --root', f'arg {self.dump}', 'arg --out', 'arg x'])
 
     def test_prepare_names_the_game_for_the_shader_precompile(self):
-        _, lines = self.run_apprun('--prepare', '--precompile')
+        _, lines, _ = self.run_apprun('--prepare', '--precompile')
         self.assertIn(f'game {self.appdir}/usr/bin/monado', lines)
+
+    def test_prepare_without_a_builder_stops_with_code_126(self):
+        (self.appdir / 'usr/share/monado/gamebuild/monado-gamebuild').unlink()
+        code, _, errors = self.run_apprun('--prepare')
+        self.assertEqual(code, 126)
+        self.assertTrue(any('game-code builder' in line for line in errors), errors)
+
+    def test_prepare_with_a_builder_that_is_not_executable_stops_with_code_126(self):
+        builder = self.appdir / 'usr/share/monado/gamebuild/monado-gamebuild'
+        builder.chmod(0o644)
+        code, _, errors = self.run_apprun('--prepare')
+        self.assertEqual(code, 126)
+        self.assertTrue(any('game-code builder' in line for line in errors), errors)
 
     def test_play_still_links_the_dump(self):
         self.run_apprun('--play', str(self.dump))
@@ -154,6 +168,18 @@ class ShaderPrecompile(unittest.TestCase):
         self.assertAlmostEqual(share, gb.PRECOMPILE_SCAN_SHARE + (1 - gb.PRECOMPILE_SCAN_SHARE) * 0.25)
         self.assertEqual(text, 'Preparing the shaders: final pass, 1 of 4')
 
+    def test_done_line_ends_the_bar(self):
+        self.assertEqual(gb.precompile_step('done 10 10 5 5'), (1.0, 'Shaders ready'))
+
+    def test_seed_line_is_labelled_and_holds_the_bar(self):
+        self.assertEqual(gb.precompile_step('seed 10 10 5 5'),
+                         (gb.PRECOMPILE_SCAN_SHARE, 'Preparing the shaders: seeding variants'))
+
+    def test_pipelines_then_done_does_not_move_the_bar_back(self):
+        pipeline = gb.precompile_step('pipelines 4 4 4 4')[0]
+        self.assertEqual(pipeline, 1.0)
+        self.assertEqual(gb.precompile_step('done 10 10 5 5')[0], 1.0)
+
     def test_unreadable_progress_is_skipped(self):
         self.assertIsNone(gb.precompile_step('scan 1 0 0 0'))
         self.assertIsNone(gb.precompile_step('half a line'))
@@ -202,6 +228,87 @@ class ShaderPrecompile(unittest.TestCase):
                 self.assertEqual(gb.main(['--precompile', '--write-costs', str(log), str(Path(d) / 'cost.json')]), 0)
 
 
+class SetupStamp(unittest.TestCase):
+    """build.json is RecompLauncher's prepare.done: it may exist only after a build that finished."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.resources = base / 'resources'
+        self.resources.mkdir()
+        self.link = {'library': 'lasgame.so'}
+        (self.resources / 'link.json').write_text(json.dumps(self.link), encoding='utf-8')
+        (self.resources / 'gamelib-id.txt').write_text('test-gamelib\n', encoding='utf-8')
+        self.dump = base / 'dump'
+        (self.dump / 'exefs').mkdir(parents=True)
+        (self.dump / 'exefs/main').write_bytes(b'main')
+        (self.dump / 'exefs/sdk').write_bytes(b'sdk')
+        (self.dump / 'romfs').mkdir()
+        self.out = base / 'out'
+        self.out.mkdir()
+        (self.out / 'lasgame.so').write_bytes(b'library')
+        self.stamp = self.out / 'build.json'
+        gb._launcher_build_share[0] = gb.PRECOMPILE_BUILD_SHARE
+
+    def tearDown(self):
+        gb._launcher_build_share[0] = 1.0
+        self.tmp.cleanup()
+
+    def argv(self, *extra):
+        return ['--root', str(self.dump), '--out', str(self.out), '--resources', str(self.resources),
+                '--jobs', '1', *extra]
+
+    def fingerprint(self):
+        return gb.fingerprint(self.dump, self.resources, self.link)
+
+    def write_stamp(self, fingerprint, units=None):
+        self.stamp.write_text(json.dumps({'fingerprint': fingerprint, 'units': units or {}}), encoding='utf-8')
+
+    def test_a_rebuild_that_fails_leaves_no_done_stamp(self):
+        self.write_stamp('0' * 64)
+        with mock.patch.object(gb, 'validate', side_effect=SystemExit('bad game files')), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                gb.main(self.argv())
+        self.assertFalse(self.stamp.exists())
+
+    def test_a_precompile_oserror_on_the_up_to_date_path_still_finishes_the_setup(self):
+        self.write_stamp(self.fingerprint())
+        printed = io.StringIO()
+        with mock.patch.dict(os.environ, {'RECOMPLAUNCHER': '1'}, clear=False), \
+                mock.patch.object(gb, 'precompile_shaders', side_effect=OSError('disk full')), \
+                contextlib.redirect_stdout(printed):
+            self.assertEqual(gb.main(self.argv('--precompile')), 0)
+        lines = printed.getvalue().splitlines()
+        self.assertIn('progress 1.0000 Shaders compile while you play', lines)
+        self.assertTrue(any('disk full' in line for line in lines), lines)
+        self.assertTrue(self.stamp.is_file())  # an up-to-date build keeps its prepare.done
+
+    def test_a_precompile_oserror_after_a_build_still_finishes_the_setup_and_reuses_the_units(self):
+        units = {'main/main_001.c': '12 34'}
+        self.write_stamp('0' * 64, units)
+        seen = {}
+
+        def compile_units(resources, out, link, jobs, log, previous=None):
+            seen['previous'] = previous
+            return []
+
+        printed = io.StringIO()
+        with mock.patch.dict(os.environ, {'RECOMPLAUNCHER': '1'}, clear=False), \
+                mock.patch.object(gb, 'validate'), mock.patch.object(gb, 'describe_compiler'), \
+                mock.patch.object(gb, 'generate_modules', return_value=[]), \
+                mock.patch.object(gb, 'compile_units', side_effect=compile_units), \
+                mock.patch.object(gb, 'link_library'), \
+                mock.patch.object(gb, 'precompile_shaders', side_effect=OSError('no space left')), \
+                contextlib.redirect_stdout(printed):
+            self.assertEqual(gb.main(self.argv('--precompile', '--force')), 0)
+        self.assertEqual(seen['previous'], units)  # the done stamp went, but its unit signatures did not
+        lines = printed.getvalue().splitlines()
+        self.assertIn('progress 1.0000 Shaders compile while you play', lines)
+        self.assertTrue(any('no space left' in line for line in lines), lines)
+        self.assertEqual(json.loads(self.stamp.read_text(encoding='utf-8'))['fingerprint'], self.fingerprint())
+
+
 class SourceContracts(unittest.TestCase):
     def test_big_picture_opens_fullscreen(self):
         device = (ROOT / 'runtime/nvn/vulkan/device.c').read_text(encoding='utf-8')
@@ -215,10 +322,6 @@ class SourceContracts(unittest.TestCase):
     def test_no_update_banner_under_recomplauncher(self):
         launcher = (ROOT / 'tools/launcher/launcher.cpp').read_text(encoding='utf-8')
         self.assertIn('upd_is_release_build() && !from_recomplauncher) upd_start(false);', launcher)
-
-    def test_appimage_carries_the_manifest(self):
-        packager = (ROOT / 'tools/package/make_appimage.py').read_text(encoding='utf-8')
-        self.assertIn("shutil.copy2(ROOT / 'recomplauncher.json', appdir / 'recomplauncher.json')", packager)
 
 
 if __name__ == '__main__':

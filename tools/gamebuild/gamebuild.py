@@ -278,7 +278,8 @@ PRECOMPILE_SCAN_SHARE = 0.8
 def precompile_step(line):
     """(share of the precompile done, text) from a cache/precompile_progress.txt line, `<phase> <files done> <files>
     <programs found> <programs built>`, weighted as the launcher's bar (pc_poll): reading the files is a fifth of the
-    scan, building the programs found the rest. The `pipelines` pass counts its own files. None when unreadable."""
+    scan, building the programs found the rest. The `pipelines` pass counts its own files, `done` ends the bar and
+    `seed` (the variant seed, no count in its line) is labelled without moving it. None when unreadable."""
     parts = line.split()
     if len(parts) != 5:
         return None
@@ -286,10 +287,15 @@ def precompile_step(line):
         files_done, files, found, built = (int(x) for x in parts[1:])
     except ValueError:
         return None
+    phase = parts[0]
+    if phase == 'done':
+        return 1.0, 'Shaders ready'
+    if phase == 'seed':
+        return PRECOMPILE_SCAN_SHARE, 'Preparing the shaders: seeding variants'
     if not files:
         return None
     read = files_done / files
-    if parts[0] == 'pipelines':
+    if phase == 'pipelines':
         share = PRECOMPILE_SCAN_SHARE + (1 - PRECOMPILE_SCAN_SHARE) * read
         return share, f'Preparing the shaders: final pass, {files_done} of {files}'
     built_share = built / found if found else 0.0
@@ -319,8 +325,8 @@ def reset_dll_directory():
 
 
 def precompile_shaders(dump):
-    """The shader precompile, after the game code. It never fails the setup: without it the game compiles each shader
-    when it first needs it, as it always could (the launcher's "Omitir")."""
+    """The shader precompile, after the game code. Callers use precompile_after_build: an OSError here (unwritable
+    install path, full disk, lost exec bit) must not fail a setup whose game code is already built."""
     share = _launcher_build_share[0]
     exe = game_executable()
     if exe is None:
@@ -357,6 +363,18 @@ def precompile_shaders(dump):
         print_progress(1, 'Shaders compile while you play')
         return
     print_progress(1, 'Shaders ready')
+
+
+def precompile_after_build(dump):
+    """Run the shader precompile without ever failing the setup. A broken install path, a full disk or a builder
+    without the exec bit must not turn a finished game-code build into a failed setup: print the fallback line the
+    launcher already knows and let the game compile the shaders as it reaches them."""
+    try:
+        precompile_shaders(dump)
+    except (OSError, ValueError) as error:
+        print(f'gamebuild: the shader precompile could not run ({error}); the game compiles shaders as it reaches them',
+              flush=True)
+        print_progress(1, 'Shaders compile while you play')
 
 
 def report(out, phase, done, total, text='', fraction=None):
@@ -508,8 +526,9 @@ def write_compile_costs(log_path, dest):
     print(f'gamebuild: {len(seconds)} chunk times -> {dest}')
 
 
-def compile_units(resources, out, link, jobs, log):
-    """Compile every generated chunk with the bundled compiler, in parallel."""
+def compile_units(resources, out, link, jobs, log, previous=None):
+    """Compile every generated chunk with the bundled compiler, in parallel. `previous` is the last build's
+    {chunk: signature}: main reads it before unlinking the done stamp, so the objects a failed build left are reused."""
     compiler = resources / link['compiler']
     generated = out / 'generated'
     units = sorted(generated.glob('*/*.c'))
@@ -518,13 +537,7 @@ def compile_units(resources, out, link, jobs, log):
     include = [str(resources / item) for item in link.get('include', ['include'])]
     objects = out / 'obj'
     objects.mkdir(parents=True, exist_ok=True)
-    stamp = out / 'build.json'
-    previous = {}
-    if stamp.is_file():
-        try:
-            previous = json.loads(stamp.read_text(encoding='utf-8')).get('units', {})
-        except (OSError, ValueError):
-            previous = {}
+    previous = previous or {}
     # The slowest chunks start first, so the end of the build is many small chunks in parallel instead of one that
     # happened to come last. Before this, sdk_090 (67 s on its own) started 80 s into the compilation and the build
     # waited for it alone. Its source size says nothing about it (a 400 KB chunk; others twice its size take 2 s), so
@@ -649,20 +662,32 @@ def main(argv=None):
     library = out / os.path.basename(link['library'])
     current = fingerprint(dump, resources, link)
     stamp = out / 'build.json'
-    if not args.force and stamp.is_file() and library.is_file():
+    # Read the last build's unit signatures before the stamp goes, so a rebuild still reuses the objects it can.
+    previous = {}
+    stamp_data = {}
+    if stamp.is_file():
         try:
-            if json.loads(stamp.read_text(encoding='utf-8')).get('fingerprint') == current:
-                print(f'gamebuild: up to date: {library}')
-                report(out, 'link', 1, 1, 'Already built')
-                if args.precompile:
-                    precompile_shaders(dump)
-                return 0
+            stamp_data = json.loads(stamp.read_text(encoding='utf-8'))
         except (OSError, ValueError):
-            pass
-    validate(dump, resources, strict=args.strict_dump)
+            stamp_data = {}
+        if isinstance(stamp_data, dict):
+            units = stamp_data.get('units')
+            previous = units if isinstance(units, dict) else {}
+        else:
+            stamp_data = {}
+    if not args.force and library.is_file() and stamp_data.get('fingerprint') == current:
+        print(f'gamebuild: up to date: {library}')
+        report(out, 'link', 1, 1, 'Already built')
+        if args.precompile:
+            precompile_after_build(dump)
+        return 0
     if args.dry_run:
         print(f'gamebuild: would build {library} from {dump} with {resources / link["compiler"]}')
         return 0
+    # A build that does not finish must not leave prepare.done (recomplauncher.json) behind: the next setup would take
+    # the stale, partial build for finished and never rebuild. It is written again, last, only after a full build.
+    stamp.unlink(missing_ok=True)
+    validate(dump, resources, strict=args.strict_dump)
     started = time.time()
     out.mkdir(parents=True, exist_ok=True)
     for name in ('progress.txt', 'gamebuild.log'):
@@ -680,7 +705,7 @@ def main(argv=None):
             note(log, 'generate: start')
             modules = generate_modules(dump, resources, out, jobs, log)
             note(log, f'generate: done; compile: start ({jobs} at a time)')
-            units = compile_units(resources, out, link, jobs, log)
+            units = compile_units(resources, out, link, jobs, log, previous)
             note(log, 'compile: done; link: start')
             report(out, 'link', 0, 1, 'Linking the game code')
             link_library(resources, out, link, units, log)
@@ -706,7 +731,7 @@ def main(argv=None):
     report(out, 'link', 1, 1, 'Game code ready')
     print(f'gamebuild: {library} ({time.time() - started:.0f}s)')
     if args.precompile:
-        precompile_shaders(dump)
+        precompile_after_build(dump)
     return 0
 
 
