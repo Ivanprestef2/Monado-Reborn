@@ -109,3 +109,31 @@ run to verify):
 
 These explain the log flood and a resource-tracking leak candidate; they are not known to cause the missing FX.
 Tracked as `T-EXIT-DLSS-2` in [tasks.md](../../dev/tasks.md).
+
+## 4. Root cause of the missing FX: the #181 cutscene unquantize (found 2026-11-23)
+
+Reproduced locally on Linux with the reporter's save (second entry, the manual save at the grass field), walking forward
+into the cutscene with the maintainer's settings applied through `XCDE_INI` (`upscaler = fsr3`, native AA, `fps = 60`,
+`occlusion = auto`, `taa = 0`, `game_blur = 0`, real time):
+
+- With the patch active (the default at more than 30 FPS, `cutscenes = same`): the Monado's ring lens and blade
+  emission are absent — at "Another new symbol appeared on the Monado!" the ring renders as flat blue trim with the
+  background visible through it. This matches the reporter's stills and the maintainer's own capture.
+- `XCDE_CUTSCENE_UNQUANTIZE=0` with everything else unchanged: the ring lens glows with its runes, the blade emits and
+  blooms — the look of the walkthrough reference.
+- Deterministic baseline (`fps = 30`, patch inactive): glow present. `occlusion = on` under the deterministic run:
+  glow still present, so occlusion culling is not involved.
+- Binary-patch A/B on a copy of the v17.0.1 build (no rebuild): replacing the call at the **third** patch site
+  (`0x700050c374`, the snap-track time rounding, in `f_700050c150`) with "return false" while leaving the other two
+  sites unquantized brings the glow back. Gate 3 (`_cutscene_track_unquantize`) is therefore the regression.
+
+Mechanism: tracks with the snap flag are authored on the exact 30 Hz grid, and the sequence evaluator matches their
+key/trigger times against that grid. Feeding it continuous time (gate 3 bypassed) misses those exact times, so the
+cutscene track that turns the Monado's glow on is never triggered. The other two gates (cutscene clock, camera
+interpolation) do not affect it. This also explains the reporter's results across upscalers: the gate depends on the
+frame rate, not on DLSS/FSR 3/bilinear or frame generation.
+
+- Workaround for players: launcher "Cutscenes: 30 fps" (`cutscenes = 30`) or `XCDE_CUTSCENE_UNQUANTIZE=0`.
+- Fix: keep gates 1 and 2 (the visible #181 smoothness improvements) and stop bypassing gate 3 in
+  `games/xcde/patches.py`; regenerate the lifted code and re-verify #181 (60 FPS cutscene pose smoothness) on the new
+  build. Not changed in this report's PR, which covers the exit crash only.
