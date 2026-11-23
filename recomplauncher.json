@@ -208,7 +208,9 @@
     }
   ],
   "exit_codes": {
-    "2": "Monado couldn't find your copy of the game (the folder with exefs and romfs). Pick it again on the game's page."
+    "2": "Monado couldn't find your copy of the game (the folder with exefs and romfs). Pick it again on the game's page.",
+    "126": "Monado's game-code builder is missing or not executable. Reinstall the game or use a release package.",
+    "127": "Monado's game-code builder could not run. Reinstall the game or use a release package."
   },
   "actions": [
     { "id": "saves", "label": "Saves", "help": "Your save files.", "open": "saves" },

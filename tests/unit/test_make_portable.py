@@ -171,6 +171,11 @@ class LauncherManifest(unittest.TestCase):
         known = {'program', 'args', 'label', 'done', 'env', 'keeps_copy', 'options'}
         self.assertLessEqual(set(self.manifest()['prepare']), known)
 
+    def test_manifest_explains_a_missing_or_unusable_builder(self):
+        codes = self.manifest()['exit_codes']
+        for code in ('126', '127'):
+            self.assertIn('game-code builder', codes[code])
+
     def test_manifest_creates_the_settings_file_a_release_does_not_ship(self):
         cfg = self.manifest()['config'][0]
         self.assertEqual(cfg['file'][0]['path'], '{install}/xcde.ini')

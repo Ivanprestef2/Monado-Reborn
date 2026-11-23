@@ -69,11 +69,13 @@ scripts/build_appimage_linux.sh       # build_linux.sh + tools/package/make_appi
 ./Monado-x86_64.AppImage /path/to/dump    # launcher; the dump is remembered
 ./Monado-x86_64.AppImage --play           # the game directly
 ./Monado-x86_64.AppImage --game /path/to/dump  # the game directly, without the targets link (RecompLauncher)
-./Monado-x86_64.AppImage --prepare --root /path/to/dump --out DIR  # the release builder (RecompLauncher's setup step)
+./Monado-x86_64.AppImage --prepare --root /path/to/dump --out DIR  # release images: the builder RecompLauncher runs
 ```
 
 The AppImage contains the game code recompiled from **your** dump, so it is for your own use: do not share it
-(CONTRIBUTING.md, art. I). It bundles the launcher, the native FSR components when they were built (with their
+(CONTRIBUTING.md, art. I). Only a release image (`make_appimage.py --release`) is a RecompLauncher package: it ships
+the first-start builder and `recomplauncher.json`; this personal image ships neither and still plays normally.
+It bundles the launcher, the native FSR components when they were built (with their
 sources and licences) and the non-system libraries; GPU drivers, the Vulkan loader, glibc and the GLib/GTK desktop
 stack (GLib, GIO, gdk-pixbuf, librsvg, cairo, pango, libmount...) come from the host (build on the oldest
 distribution you want to run it on). Its mount is read-only, so `xcde.ini`, `cache/`, saves

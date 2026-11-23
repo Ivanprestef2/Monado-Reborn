@@ -46,10 +46,16 @@ if [ -f "$appdir/usr/share/monado/gamebuild/link.json" ]; then
 fi
 if [ "${1:-}" = --prepare ]; then
   # The builder takes its own arguments (--root, --out) and finds its resources beside itself; with --precompile it
-  # then precompiles the shaders with the game, named here.
+  # then precompiles the shaders with the game, named here. A personal image has no builder: say so instead of leaving
+  # the launcher with the shell's "No such file or directory" (126/127), and use 126 so recomplauncher.json can explain.
   shift
+  builder="$appdir/usr/share/monado/gamebuild/monado-gamebuild"
+  if [ ! -x "$builder" ]; then
+    echo "Monado: this AppImage has no usable game-code builder at $builder (release images ship it); reinstall the game." >&2
+    exit 126
+  fi
   export MONADO_GAME_EXE="$appdir/usr/bin/monado"
-  exec "$appdir/usr/share/monado/gamebuild/monado-gamebuild" "$@"
+  exec "$builder" "$@"
 fi
 direct=
 game_opt=

@@ -166,10 +166,11 @@ def main():
             shutil.copy2(dep, target)
         for name in ('AppRun', 'monado.desktop', 'monado.svg'):
             shutil.copy2(ROOT / 'packaging/linux' / name, appdir / name)
-        # RecompLauncher reads /recomplauncher.json from the AppImage itself (no file beside it in a release)
-        shutil.copy2(ROOT / 'recomplauncher.json', appdir / 'recomplauncher.json')
         shutil.copy2(ROOT / 'data/variants_seed.bin', share / 'variants_seed.bin')
-        if a.release:  # the first-start builder and its resources (AppRun exports XCDE_GAMEBUILD_DIR)
+        if a.release:  # a RecompLauncher package: the first-start builder, its resources and the manifest
+            # RecompLauncher reads /recomplauncher.json from the AppImage itself. Only a release image has the builder,
+            # so only a release image may advertise the setup step: a personal image would fail every Easy Setup.
+            shutil.copy2(ROOT / 'recomplauncher.json', appdir / 'recomplauncher.json')
             shutil.copytree(a.gamebuild.resolve(), share / 'gamebuild', symlinks=False,
                             ignore=shutil.ignore_patterns('obj', 'generated', 'progress.txt', '*.log'))
             (share / 'gamebuild/monado-gamebuild').chmod(0o755)
