@@ -271,7 +271,7 @@ Triage of both symptoms, the minidump findings and the A/B table:
   `prepare.timeout`, and release packages added `prepare.version`).
 - `tools/package/make_portable.py` copies the manifest unchanged (RecompLauncher runs the setup step again after
   every new release; the builder's fingerprint makes that a no-op when nothing changed).
-  `tools/package/make_appimage.py` puts it at the AppDir root, where RecompLauncher reads it from the AppImage.
+  `tools/package/make_appimage.py` puts it at a release AppDir's root, where RecompLauncher reads it from the AppImage.
 - `packaging/linux/AppRun`: `--game <dump>` plays without the `targets` link, `--prepare` runs the bundled builder.
   RecompLauncher passes `MONADO_DATA_ROOT={install}`, so the Linux install keeps the Windows layout.
 - `tools/gamebuild/gamebuild.py`: `--prepare` is accepted (and ignored), and with `RECOMPLAUNCHER=1` every progress
@@ -288,3 +288,26 @@ Triage of both symptoms, the minidump findings and the A/B table:
 - Tests: `tests/unit/test_recomplauncher_support.py`, `tests/unit/test_make_portable.py`; the unit suite, the package
   guard and the documentation/path checks pass on Linux. Not done here: a full setup and Play from RecompLauncher
   (needs a dump), and a Windows build of the two C/C++ edits (CI compiles them).
+
+## RecompLauncher setup review fixes (T279, 2026-11-23)
+
+- `tools/package/make_appimage.py`: `recomplauncher.json` is copied only for `--release` images, inside the same
+  branch that copies the first-start builder. A personal image (game code, no builder) no longer advertises an Easy
+  Setup step whose `AppRun --prepare` has nothing to run.
+- `packaging/linux/AppRun`: `--prepare` checks that the builder is present and executable before `exec`; otherwise it
+  prints why and exits 126 instead of the shell's raw 126/127. `recomplauncher.json` maps 126/127 to the same message.
+- `tools/gamebuild/gamebuild.py`: on a rebuild, the `prepare.done` stamp (`build.json`) is unlinked after the
+  up-to-date check and before `validate`/build, while its unit signatures are kept in memory and passed to
+  `compile_units`, so objects are still reused. A failed or interrupted rebuild therefore never looks finished, and a
+  successful one writes the stamp last as before. The up-to-date stamp read is the only operation in the
+  `try/except`; both precompile call sites go through `precompile_after_build`, which turns an `OSError`/`ValueError`
+  into the "Shaders compile while you play" fallback line and a diagnostic instead of failing the setup.
+- `precompile_step` reads the game's `done` line as 1.0 (the bar used to move 1.0 → 0.94 when the poll caught it) and
+  labels `seed` without moving the bar; `pipelines` then carries it to 1.0.
+- Tests: `tests/unit/test_recomplauncher_support.py` (`--prepare` 126; failed rebuild leaves no `build.json`;
+  up-to-date and end-of-build precompile `OSError` still exit 0; previous unit signatures reach `compile_units`;
+  `done`/`seed` lines), the new `tests/unit/test_make_appimage.py` (a personal tree has no manifest or builder, a
+  release tree has both) and `tests/unit/test_make_portable.py` (the mapped builder exit codes).
+- Verified on Linux: 179 unit tests pass, 10 skipped; `package_guard.py --git`, `check_docs.py`, `check_paths.py`,
+  `sh -n packaging/linux/AppRun`; the manifest validates against the live schema with `ajv-cli` (draft-07,
+  non-strict). Not run here: a full RecompLauncher setup/Play (needs a dump) and the Windows package.
