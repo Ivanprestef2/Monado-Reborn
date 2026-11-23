@@ -43,7 +43,7 @@ path does not delete an entire effect layer. What is cutscene- or configuration-
 
 | # | Hypothesis | Cheap A/B (no rebuild unless noted) | Expected if true |
 |---|---|---|---|
-| 1 | The #181 cutscene unquantize (v17.0.1, the day before) changes rtmevt track timing; an effect track's spawn is missed. **Checked and weakened** (see below): the patch only replaces the 1/30 s rounding of a track's local time | `cutscenes = 30` in the launcher, or `XCDE_CUTSCENE_UNQUANTIZE=0` | FX appears with the A/B |
+| 1 | The #181 cutscene unquantize (v17.0.1, the day before) changes rtmevt track timing; an effect track's spawn is missed. **Confirmed** (section 4): the snap-track time rounding is the trigger | global `fps = 30` or `XCDE_CUTSCENE_UNQUANTIZE=0` (`cutscenes = 30` does not disable it, see section 4) | FX appears with the A/B |
 | 2 | The game's own occlusion culling drops the effect emitter (documented class: #14 "floor disappears and comes back", T139) | `occlusion = off` (or `XCDE_OCCLUSION=0`) | FX appears with culling off |
 | 3 | Ultrawide handling: `wide box remap` + `uvb()` sample remap for the 21:9 window | run a 16:9 window (e.g. 2560x1440) | FX appears at 16:9 |
 | 4 | Vertex mirrors for GPU-written effect streams collapse a tail (reads go to the heap / clamp to the mirror end) | `XCDE_XFB_SHADOW=0`, `XCDE_STORE_SHADOW=0` | FX appears with mirrors off |
@@ -133,7 +133,12 @@ cutscene track that turns the Monado's glow on is never triggered. The other two
 interpolation) do not affect it. This also explains the reporter's results across upscalers: the gate depends on the
 frame rate, not on DLSS/FSR 3/bilinear or frame generation.
 
-- Workaround for players: launcher "Cutscenes: 30 fps" (`cutscenes = 30`) or `XCDE_CUTSCENE_UNQUANTIZE=0`.
+- Workaround for players: **global** `fps = 30` or `XCDE_CUTSCENE_UNQUANTIZE=0`. The launcher's "Cutscenes: 30 fps"
+  (`cutscenes = 30` / `30fg`) does **not** help: `g_cut30` (the flag that disables the bypass) is only set while
+  `xcde_in_cutscene()` reports a cutscene, and the detector never fires for this scene — zero `[cutscene]` lines in
+  every local run of it — so the unquantize stays active. Global 30 FPS bypasses the detector (`g_settings.fps != 30`
+  in `xcde_cutscene_unquantize()`), which is why only that one works. The detector miss is its own defect (it also
+  disables the 30 FPS present hold and the frame-generation option for this cutscene), tracked as `T-216-FX-3`.
 - Fix (applied in `games/xcde/patches.py`): the third bypass is removed, so gates 1 and 2 keep the visible #181
   smoothness while snap tracks stay on the 30 Hz grid. **Pending:** regenerate the lifted code from the main checkout
   and re-verify #181 (60 FPS cutscene pose smoothness, T224's frame-pair measurement) on the regenerated build before

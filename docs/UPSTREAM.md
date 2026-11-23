@@ -80,7 +80,8 @@ even when running above 30 FPS (`cutscenes = same`), causing 30 Hz pose/camera s
   never switch on in every cutscene running above 30 FPS. The clock and camera gates keep the #181 smoothness.
 - `runtime/hle/framepace.c`: `xcde_cutscene_unquantize()` enables the bypass only when `cutscenes = same` and target
   FPS > 30 (with `XCDE_CUTSCENE_UNQUANTIZE=0|1` for A/B diagnostics); 30 FPS and `cutscenes = 30` / `30fg` execute the
-  original code paths bit-identically.
+  original code paths bit-identically when the cutscene detector fires (it misses some scenes, see
+  `docs/dev/tasks.md` T-216-FX-3);  original code paths bit-identically.
 - `tools/launcher/launcher.cpp`: updated the Cutscenes option tooltip to reflect smooth FPS-matched cutscenes.
 
 ## Menu / map / load-screen backdrop corruption on dynamic-resolution resize (GitHub #172, 2026-11-21)

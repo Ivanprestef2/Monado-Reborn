@@ -1068,7 +1068,8 @@ unB3s\samples.txt - suspected single translator thread: a translation cache woul
       - playback speed unchanged over 265 s of deterministic playback;
       - `XCDE_CUTSCENE_UNQUANTIZE=0` control (frames 15900-15905): `MAD = 0.000000`, `max_diff = 0` (bit-identical to
         unpatched baseline / 30 fps path).
-  - Fallback (`cutscenes = 30` / `30fg`, Metroid-Dread-Recomp 17b72bb) remains available as an optional setting.
+  - Fallback (`cutscenes = 30` / `30fg`, Metroid-Dread-Recomp 17b72bb) remains available as an optional setting
+    (it depends on `xcde_in_cutscene()`, which misses some scenes: T-216-FX-3).
 - T226 addendum (2026-10-23): Metroid-Dread-Recomp, all 15 commits, checked:
   - ccd609c (the state cache not reset after the DLSS pass froze the picture): n/a. XCDE forgets its cached state
     (ss_forget) at every render pass begin and after its own passes.
@@ -1688,9 +1689,15 @@ Detalle: `docs/PERFORMANCE_UI.md`. Evidencia: `docs/evidence/2026-11-04-performa
 - [ ] T-216-FX-2 **Root cause: the #181 cutscene unquantize (gate 3).** Reproduced on Linux with the
   reporter's manual save and the maintainer's settings: at 60 FPS the snap-track time bypass
   (`0x700050c374`, `_cutscene_track_unquantize`) misses the exact 30 Hz key times and the cutscene track
-  that enables the Monado's glow never triggers; `XCDE_CUTSCENE_UNQUANTIZE=0` (or `cutscenes = 30`)
+  that enables the Monado's glow never triggers; `XCDE_CUTSCENE_UNQUANTIZE=0` (or global `fps = 30`)
   restores it, and a binary-patched build with only gate 3 requantized restores it too. Fix applied: the third
   bypass is removed from `games/xcde/patches.py` (the clock and camera gates stay). Pending: regenerate the lifted code
   in the main checkout and re-verify #181 smoothness on the regenerated build. Workaround for players until then:
-  `cutscenes = 30` / `XCDE_CUTSCENE_UNQUANTIZE=0`. Evidence:
-  [summary.md](../evidence/2026-11-23-issue-216/summary.md).
+  global `fps = 30` or `XCDE_CUTSCENE_UNQUANTIZE=0` (`cutscenes = 30` does not disable the bypass, see
+  T-216-FX-3). Evidence: [summary.md](../evidence/2026-11-23-issue-216/summary.md).
+- [ ] T-216-FX-3 **The cutscene detector misses this cutscene.** `xcde_in_cutscene()` (`framepace.c`: globals
+  `0x70012b9410` and `0x70012d47b4`) never reports the Monado/Juju scene of #216 - zero `[cutscene]` lines in every
+  local run of it at 60 FPS (deterministic and real time) - so `g_cut30` stays false: `cutscenes = 30` / `30fg` and
+  the 30 FPS present hold do nothing there and the #181 bypass keeps running. Only global `fps = 30` or
+  `XCDE_CUTSCENE_UNQUANTIZE=0` turn it off. Find the globals this scene does set (or another signature: the camera
+  block, letterbox / HUD suppression) and extend the detector. Found while reproducing #216 (2026-11-23).

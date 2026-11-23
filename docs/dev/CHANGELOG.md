@@ -165,7 +165,7 @@ of `tasks.md`; do not move them, they are the record.
   the reactive mask). Worth fixing next: fill `desc` with the `VkImageCreateInfo` and tag the mask as
   `kBufferTypeReactiveMaskHint`, then re-run the same session and check the log says 0 errors.
 - The report's first symptom (the Monado's ether/particles missing in in-engine cutscenes) still needs a save and a
-  reference image; the cheapest A/Bs for the reporter are `cutscenes = 30` (or `XCDE_CUTSCENE_UNQUANTIZE=0`, the #181
+  reference image; the cheapest A/Bs for the reporter are global `fps = 30` (or `XCDE_CUTSCENE_UNQUANTIZE=0`, the #181
   change shipped the day before), `occlusion = off`, a 16:9 window, `frame_gen = 0` and `XCDE_XFB_SHADOW=0`.
 
 - Update (same evening, the reporter's own A/Bs): with FSR 3.1 and with the bilinear upscaler the Monado FX are
@@ -178,7 +178,8 @@ of `tasks.md`; do not move them, they are the record.
   Monado's ether glow / ring lens never triggers. `XCDE_CUTSCENE_UNQUANTIZE=0` and a binary-patched build with only that
   gate requantized both restore it; occlusion was ruled out. Fix: the third bypass is removed from
   `games/xcde/patches.py` (the clock and camera gates keep the #181 smoothness); regeneration and the #181 re-measure
-  are pending. Workaround meanwhile: `cutscenes = 30` in the launcher.
+  are pending. Workaround meanwhile: global `fps = 30` or `XCDE_CUTSCENE_UNQUANTIZE=0` (`cutscenes = 30` does not
+  disable the bypass, because `xcde_in_cutscene()` never detects this cutscene — tracked as `T-216-FX-3`).
 
 Triage of both symptoms, the minidump findings and the A/B table:
 [summary.md](../evidence/2026-11-23-issue-216/summary.md).
