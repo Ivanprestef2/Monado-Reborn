@@ -18,7 +18,7 @@
 //    XCDE_SPIRV_LOOSE, LARECOMP_VK_NO_SPIRV_CACHE), the translator switches that change the emitted GLSL
 //    (XCDE_STATIC_STACKS, XCDE_RSC_PIXEL, XCDE_D16_REF, XCDE_SCALED_GATHER, LARECOMP_NO_DISCARD, XCDE_HW_FP16,
 //    XCDE_EARLY_FS, XCDE_STRUCTURED_CFG, LARECOMP_SAVE_MSL), the replacement/patch sources and overrides
-//    (XCDE_BLOOM_PREFILTER, XCDE_BLOOM_FILTER, XCDE_GTAO, XCDE_CHAR_LIGHT, XCDE_TMAA_TEXEL, XCDE_GLSL_DIR; the
+//    (XCDE_BLOOM_PREFILTER, XCDE_BLOOM_FILTER, XCDE_GTAO, XCDE_CHAR_LIGHT, XCDE_TMAA_TEXEL, XCDE_WATER_REFRACT_FIX, XCDE_GLSL_DIR; the
 //    override directory's .glsl bytes are hashed too), the
 //    pipeline/layout policy reachable from the precompile build (LARECOMP_VK_GPL, XCDE_VK_GPL, XCDE_PUSH_DESC,
 //    XCDE_CANON, XCDE_GPL_RETAIN, LARECOMP_VK_D24) and the precompile's own pass switches (XCDE_PRECOMPILE_LIBS,
@@ -193,7 +193,7 @@ static const char *const k_sig_env[] = {
     "XCDE_STATIC_STACKS", "XCDE_RSC_PIXEL", "XCDE_D16_REF", "XCDE_SCALED_GATHER", "LARECOMP_NO_DISCARD",
     "XCDE_HW_FP16", "XCDE_EARLY_FS", "XCDE_STRUCTURED_CFG", "LARECOMP_SAVE_MSL",
     // replacement GLSL, source patches and hand-edited stage overrides (runtime/nvn/vulkan/exec.c compile_program)
-    "XCDE_BLOOM_PREFILTER", "XCDE_BLOOM_FILTER", "XCDE_GTAO", "XCDE_CHAR_LIGHT", "XCDE_TMAA_TEXEL",
+    "XCDE_BLOOM_PREFILTER", "XCDE_BLOOM_FILTER", "XCDE_GTAO", "XCDE_CHAR_LIGHT", "XCDE_TMAA_TEXEL", "XCDE_WATER_REFRACT_FIX",
     "XCDE_GLSL_DIR",
     // pipeline/layout policy and artifacts reached by vk_precompile_program / vk_precompile_variant (device.c / exec.c /
     // textures.c: LARECOMP_VK_D24 selects the depth format used when a recorded pipeline is rebuilt)

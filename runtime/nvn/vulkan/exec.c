@@ -2513,6 +2513,107 @@ static const char *tmaa_texel_src(uint64_t code, const char *src, char **out_pat
     return buf;
 }
 
+// [XCDE] GitHub #256: forward water shaders (e.g. Colony 9 lake 72857ebd00 / a62c8ffe3bb0317d) sample a 640x360
+// downsampled copy of the lit opaque scene at wave-perturbed screen UVs for underwater refraction without any depth
+// check. Any water pixel within the refraction offset radius of a foreground character or bush samples the foreground
+// object from the scene copy, producing a feathered halo strictly against the water even with SSR/AA/scaling off.
+// Inject a depth-rejection helper bound to the pass's own read-only depth attachment (binding 99, standard Z: near=0,
+// far=1): open water keeps its exact perturbed UV; when any corner of the half-res texel footprint hits a foreground
+// occluder (depth < gl_FragCoord.z), try the mirrored offset and then clean cardinal neighbours before falling back to
+// the unperturbed UV. XCDE_WATER_REFRACT_FIX=0 restores the game's original unguarded refraction.
+#define WATER_DEPTH_BINDING 99
+static const char *water_refract_src(const char *src, char **out_patch) {
+    static int on = -1;
+    *out_patch = NULL;
+    if (on < 0) { const char *e = getenv("XCDE_WATER_REFRACT_FIX"); on = !e || atoi(e) != 0; }
+    if (!on || !src) return src;
+    const char *aspect = strstr(src, "0x3fe28f5cu");
+    if (!aspect) return src;
+    const char *scale = strstr(aspect, "0x3f333333u");
+    if (!scale || (size_t)(scale - aspect) > 4096) return src;
+    const char *main_at = strstr(src, "void main() {");
+    if (!main_at || main_at >= aspect) return src;
+    // Find the RGB scene-color texture(t<N>, vec2(as_f(r<X>), as_f(r<Y>))) sample after the refraction offset scale.
+    const char *call = NULL, *call_end = NULL;
+    char tex_name[16] = {0}, uv_expr[64] = {0};
+    for (const char *q = scale; q && (size_t)(q - scale) < 4096; ) {
+        const char *hit = strstr(q, "texture(t");
+        if (!hit || (size_t)(hit - scale) >= 4096) break;
+        const char *p = hit + 8;  // points at 't'
+        const char *tn0 = p;
+        if (*p == 't') p++;
+        while (*p >= '0' && *p <= '9') p++;
+        size_t tn_len = (size_t)(p - tn0);
+        if (tn_len >= 2 && tn_len < sizeof tex_name && !strncmp(p, ", vec2(as_f(r", 13)) {
+            const char *uv0 = p + 2;  // "vec2(as_f(r...), as_f(r...))"
+            const char *close = strstr(uv0, ")))");
+            const char *brace = close ? strchr(close, '}') : NULL;
+            if (close && brace && (size_t)(close - uv0) + 2 < sizeof uv_expr && (size_t)(brace - close) < 256) {
+                // Only match the 3-channel RGB refraction sample (skip 2-channel light-shaft sample t5).
+                const char *t2 = strstr(close, "t[2]");
+                if (t2 && t2 < brace) {
+                    memcpy(tex_name, tn0, tn_len);
+                    tex_name[tn_len] = 0;
+                    memcpy(uv_expr, uv0, (size_t)(close - uv0) + 2);
+                    uv_expr[(size_t)(close - uv0) + 2] = 0;
+                    call = hit;
+                    call_end = close + 3;  // past ")))"
+                    break;
+                }
+            }
+        }
+        q = hit + 9;
+    }
+    if (!call) return src;
+    static const char helper[] =
+        "layout(set = 1, binding = 99) uniform sampler2D monado_water_depth;\n"
+        "float monado_water_dmin(vec2 uv, vec2 ht) {\n"
+        "  float a = min(texture(monado_water_depth, uv + vec2(-ht.x, -ht.y)).r,\n"
+        "                texture(monado_water_depth, uv + vec2( ht.x, -ht.y)).r);\n"
+        "  float b = min(texture(monado_water_depth, uv + vec2(-ht.x,  ht.y)).r,\n"
+        "                texture(monado_water_depth, uv + vec2( ht.x,  ht.y)).r);\n"
+        "  return min(a, b);\n"
+        "}\n"
+        "vec2 monado_water_refract_uv(vec2 ruv, vec2 t_sz) {\n"
+        "  ivec2 dsz = textureSize(monado_water_depth, 0);\n"
+        "  if (dsz.x <= 1) return ruv;\n"
+        "  vec2 uv0 = gl_FragCoord.xy / vec2(dsz);\n"
+        "  vec2 ht = 0.5f / t_sz;\n"
+        "  float wz = gl_FragCoord.z;\n"
+        "  if (monado_water_dmin(ruv, ht) >= wz) return ruv;\n"
+        "  vec2 ruv2 = clamp(uv0 + (uv0 - ruv), vec2(0.001f), vec2(0.999f));\n"
+        "  if (monado_water_dmin(ruv2, ht) >= wz) return ruv2;\n"
+        "  vec2 step_uv = 1.5f / t_sz;\n"
+        "  vec2 best = uv0;\n"
+        "  float best_d = monado_water_dmin(uv0, ht);\n"
+        "  vec2 dirs[4] = vec2[4](vec2(step_uv.x, 0.0f), vec2(-step_uv.x, 0.0f), vec2(0.0f, step_uv.y), vec2(0.0f, -step_uv.y));\n"
+        "  for (int i = 0; i < 4; i++) {\n"
+        "    vec2 c = clamp(uv0 + dirs[i], vec2(0.001f), vec2(0.999f));\n"
+        "    float d = monado_water_dmin(c, ht);\n"
+        "    if (d > best_d) { best_d = d; best = c; }\n"
+        "  }\n"
+        "  return best;\n"
+        "}\n";
+    char rep[192];
+    int rlen = snprintf(rep, sizeof rep, "texture(%s, monado_water_refract_uv(%s, vec2(textureSize(%s, 0))))", tex_name, uv_expr, tex_name);
+    if (rlen <= 0 || (size_t)rlen >= sizeof rep) return src;
+    size_t hlen = sizeof helper - 1, n = strlen(src);
+    char *buf = malloc(n + hlen + (size_t)rlen + 1);
+    if (!buf) return src;
+    size_t p1 = (size_t)(main_at - src), p2 = (size_t)(call - main_at), p3 = n - (size_t)(call_end - src);
+    char *o = buf;
+    memcpy(o, src, p1); o += p1;
+    memcpy(o, helper, hlen); o += hlen;
+    memcpy(o, main_at, p2); o += p2;
+    memcpy(o, rep, (size_t)rlen); o += rlen;
+    memcpy(o, call_end, p3 + 1);
+    static int reported;
+    if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED))
+        LOG("[water] depth-rejected refraction enabled (%s)\n", tex_name);
+    *out_patch = buf;
+    return buf;
+}
+
 // A debug override is accepted only when it is a regular file and the whole file can be read: fopen() can open a
 // directory on some systems, and a failed seek/tell/short read used to become an empty shader override.
 static char *read_glsl_override(const char *dir, unsigned long long addr, const char *stage, const char *label) {
@@ -2552,6 +2653,8 @@ static void compile_program(void *arg) {
     { const char *b = char_light_src(p->src[1], fs_src, &fs_char); if (b) fs_src = b; }
     char *fs_tmaa = NULL;
     { const char *b = tmaa_texel_src(p->src[1], fs_src, &fs_tmaa); if (b) fs_src = b; }
+    char *fs_water = NULL;
+    { const char *b = water_refract_src(fs_src, &fs_water); if (b) fs_src = b; }
     char *fs_over = NULL;
     char glsl_dir_env[1100];
     const char *glsl_dir = xcde_utf8_getenv("XCDE_GLSL_DIR", glsl_dir_env, sizeof glsl_dir_env) ? glsl_dir_env : NULL;
@@ -2568,7 +2671,7 @@ static void compile_program(void *arg) {
     unsigned miss0 = vk_spirv_tl_misses;
     uint32_t *sv = vk_glsl_to_spirv(vs_src, STAGE_VERTEX, "vs", &nv);
     uint32_t *sf = sv ? vk_glsl_to_spirv(fs_src, STAGE_FRAGMENT, "fs", &nf) : NULL;
-    free(fs_over); free(vs_over); free(fs_char); free(fs_tmaa);
+    free(fs_over); free(vs_over); free(fs_char); free(fs_tmaa); free(fs_water);
     if (!sv || !sf) { free(sv); free(sf); atomic_store(&p->state, 2); return; }
     p->nbinds = vk_reflect(sv, nv, p->binds, MAX_BIND);
     p->nbinds += vk_reflect(sf, nf, p->binds + p->nbinds, MAX_BIND - p->nbinds);
@@ -6359,7 +6462,16 @@ static VkDescriptorSet stage_set_ex(Prog *p, VkDescriptorSetLayout layout, uint3
         VkBindingInfo *b = &p->binds[idxs[k]];
         w[n] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = b->binding,
                                       .descriptorCount = 1, .descriptorType = b->type};
-        if (b->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && b->binding >= 32) {
+        if (b->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && b->binding == WATER_DEPTH_BINDING) {
+            TexBackend *db = st.rt.depth ? (TexBackend *)st.rt.depth->backend : NULL;
+            VkImageView dv = VK_NULL_HANDLE;
+            if (db && (db->aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) {
+                static const VkComponentMapping id = {0};
+                dv = vk_image_view(db, VK_IMAGE_VIEW_TYPE_2D, db->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_DEPTH_BIT);
+            }
+            ii[n] = (VkDescriptorImageInfo){vk_default_sampler(false), dv ? dv : vk_dummy_view(TEXTYPE_2D), VK_IMAGE_LAYOUT_GENERAL};
+            w[n].pImageInfo = &ii[n];
+        } else if (b->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && b->binding >= 32) {
             int ti = (int)b->binding - 32;
             float sc[2]; uint32_t wh[2];
             if (ti < si->ntex && pre_ii && ti < 64) { ii[n] = pre_ii[ti]; sc[0] = tex_sc[sg][ti][0]; sc[1] = tex_sc[sg][ti][1]; wh[0] = tex_wh[sg][ti][0]; wh[1] = tex_wh[sg][ti][1]; }
