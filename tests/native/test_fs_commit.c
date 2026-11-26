@@ -24,6 +24,15 @@ static ssize_t real_pwrite(int fd, const void *buf, size_t n, off_t off) {
     errno = error;
     return written;
 }
+ssize_t pread(int fd, void *buf, size_t n, off_t off) {
+    __int64 old = _lseeki64(fd, (__int64)off, SEEK_SET);
+    if (old < 0) return -1;
+    int got = _read(fd, buf, (unsigned)n);
+    int error = errno;
+    _lseeki64(fd, old, SEEK_SET);
+    errno = error;
+    return got;
+}
 #else
 #define fs_getpid getpid
 static ssize_t real_pwrite(int fd, const void *buf, size_t n, off_t off) {
