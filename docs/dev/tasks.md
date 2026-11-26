@@ -106,8 +106,9 @@ Spanish on 2026-10-25) and `CONTRIBUTING.md` (the project rules, "constitution")
 - [x] T036 [M3] Missing services used (per T034); network / shop / friends as "offline" · Req: FR-020, FR-024. **Done
   2026-10-17 (title):** no network / shop / friends services are requested; the 9 unimplemented IPC commands (`am`,
   `pctl`) are audited and strict mode catches them.
-- [ ] T037 [P] [M3] **Test first:** atomic saves and handle closing → the planned `test_fs_commit` native test (never created) · Req: FR-023.
-  (Later: save commits with a journal, b78be40.)
+- [x] T037 [P] [M3] **Test first:** atomic saves and handle closing → `tests/native/test_fs_commit.c` (short writes,
+  ENOSPC / fsync failures and a failed commit keep the journal) · Req: FR-023.
+  (Save commits with a journal, b78be40; handle closing in T208.)
 - [x] T038 [M3] `fsp-srv` over `targets/romfs` with 18.5 K files: listings and opens without copies · Req: FR-020.
 - [x] T039 [P] [M3] `movie::SetCoreMask` and `movie::MediaData::operator=` (the 2 missing in LAS) · Req: FR-042.
   (Done in T118.)
