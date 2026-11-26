@@ -111,6 +111,7 @@ typedef struct {
 #define GMAP_MAX 16  // ranges in the table (GMap { uvec4 gmap[GMAP_MAX + 1]; }: [i] = addr lo, addr hi, size, word offset;
                      // [GMAP_MAX].x = count)
 extern _Thread_local uint64_t maxwell_gmem_base, maxwell_gmem_size;  // [XCDE] T281: per translating thread
+extern bool maxwell_native_fp16;  // [XCDE] Vulkan shaderFloat16 supported: emit f16vec2 arithmetic in FS/CS
 // Debug: when translating the shader whose code starts at maxwell_dbg_code, output register
 // maxwell_dbg_reg as captured after the instruction at maxwell_dbg_pc (greyscale, all targets).
 extern const uint8_t *maxwell_dbg_code;

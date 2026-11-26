@@ -48,6 +48,7 @@ typedef struct {
     bool feedback_loop;  // [XCDE] VK_EXT_attachment_feedback_loop_layout (#7): colour attachments sampled by the draw that writes them
     bool feedback_local_read;  // [XCDE] #7: VK_KHR_dynamic_rendering_local_read - by-region dependency inside rendering
     bool gpl;  // [XCDE] T188: VK_EXT_graphics_pipeline_library with fast linking (exec.c build_pipeline)
+    bool shader_float16;  // [XCDE] Vulkan 1.2 shaderFloat16 enabled (native f16vec2 in translated FS/CS)
     bool push_descriptor;
     uint32_t max_push_descriptors;
     PFN_vkCmdPushDescriptorSetKHR cmd_push_descriptor_set;

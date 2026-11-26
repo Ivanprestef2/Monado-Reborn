@@ -478,6 +478,8 @@ static void create_device(void) {
                                             .scalarBlockLayout = h12.scalarBlockLayout, .shaderFloat16 = h12.shaderFloat16, .pNext = legacy ? (void *)&render_enable : (void *)&f13,
                                             .samplerFilterMinmax = h12.samplerFilterMinmax};  // [XCDE] NVN reduction filters
     g_vk.minmax = h12.samplerFilterMinmax;
+    g_vk.shader_float16 = f12.shaderFloat16 == VK_TRUE;
+    maxwell_native_fp16 = g_vk.shader_float16;
     VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gplf = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT,
                                                                .graphicsPipelineLibrary = VK_TRUE, .pNext = &f12};
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
