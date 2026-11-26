@@ -108,6 +108,20 @@ int main(void) {
     assert(xcde_present_pacer_before_present(&pp, slow_now, 60) == 0);
     assert(pp.next_present_ns == slow_now + p60);
 
+    // Async overlap regression (Issue #261): Frame N+1 calls frame_start() slightly past Frame N's
+    // deadline BEFORE vk-render calls before_present() for Frame N. Frame N must NOT sleep an extra
+    // full period, and Frame N's work time must still be measured against Frame N's own start time.
+    XcdePresentPacer ap = {0};
+    uint64_t at = 3000000000ull;
+    assert(xcde_present_pacer_frame_start(&ap, at, 60) == 0);
+    // Frame N+1 starts 0.5 ms after Frame N's target present (at + p60) while Frame N is still in flight
+    uint64_t n1_start = xcde_present_pacer_frame_start(&ap, at + p60 + 500000ull, 60);
+    assert(n1_start > at + p60 && n1_start < at + 2 * p60);
+    // Frame N finishes 1.0 ms after its target present -> must present immediately (0 wait), not sleep ~16 ms!
+    assert(xcde_present_pacer_before_present(&ap, at + p60 + 1000000ull, 60) == 0);
+    // Frame N's measured work time was p60 + 1 ms, NOT 0.5 ms
+    assert(ap.work_count == 1 && ap.work_hist[0] == p60 + 1000000ull);
+
     // Unlimited (0) resets pacer
     assert(xcde_present_pacer_frame_start(&pp, slow_now + 1000000ull, 0) == 0);
     assert(pp.next_present_ns == 0 && pp.work_count == 0);

@@ -32,14 +32,17 @@ static bool stage_opt(int stage) {
 
 // SPIR-V disk cache: cache/spirv/<hash of stage + source>.spv, so a known shader costs a file read instead of a
 // GLSL compile (the driver's pipeline cache only covers the step after this one).
-static uint64_t src_hash(const char *src, int stage) {
+static uint64_t src_hash_opt(const char *src, int stage, bool opt) {
     uint64_t h = (0xcbf29ce484222325ull ^ (uint64_t)stage) + 3;  // + version of the post-processing (no_contraction)
     // T250: target environment, optimization and translator/postprocess revision belong in the cache key.
     h ^= (uint64_t)g_vk.api_version << 17;
-    h ^= stage_opt(stage) ? 0x6f7074696d697a65ull : 0;
+    h ^= opt ? 0x6f7074696d697a65ull : 0;
     h ^= 0x544B323530000001ull;
     for (const char *p = src; *p; p++) { h ^= (uint8_t)*p; h *= 0x100000001B3ull; }
     return h;
+}
+static uint64_t src_hash(const char *src, int stage) {
+    return src_hash_opt(src, stage, stage_opt(stage));
 }
 
 // [XCDE] SPIR-V pack: cache/spirv.pack (records: u32 'XSPV', u32 bytes, u64 hash, SPIR-V) and cache/spirv.idx (24-byte
@@ -333,11 +336,27 @@ bool vk_spirv_cached(const char *src, int stage) {
 }
 
 uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t *nwords) {
-    uint64_t h = src_hash(src, stage);
+    bool want_opt = stage_opt(stage);
+    uint64_t h = src_hash_opt(src, stage, want_opt);
     static int nocache = -1;
     if (nocache < 0) nocache = getenv("LARECOMP_VK_NO_SPIRV_CACHE") != NULL;
     uint32_t *out = nocache ? NULL : cache_load(h, nwords);
     if (out) { __atomic_add_fetch(&vk_spirv_hits, 1, __ATOMIC_RELAXED); return out; }
+    // [XCDE] Issue #261: on a runtime SPIR-V cache miss during gameplay, running full spirv-opt
+    // (shaderc_optimization_level_performance) takes ~82 ms/FS average (~7.5x unoptimized) and stalls draws in
+    // wait_ready(). Precompiled shaders already hit the optimized hash above (full GPU performance); for an
+    // unprecompiled runtime miss, fall back to fast O0 compilation under the unoptimized hash (never poisoning
+    // the optimized hash) unless the user explicitly forced LARECOMP_VK_OPT or XCDE_FS_OPT.
+    bool compile_opt = want_opt;
+    uint64_t store_h = h;
+    if (want_opt && !getenv("XCDE_PRECOMPILING") && !getenv("LARECOMP_VK_OPT") && !getenv("XCDE_FS_OPT")) {
+        compile_opt = false;
+        store_h = src_hash_opt(src, stage, false);
+        if (!nocache) {
+            out = cache_load(store_h, nwords);
+            if (out) { __atomic_add_fetch(&vk_spirv_hits, 1, __ATOMIC_RELAXED); return out; }
+        }
+    }
     {   // [XCDE] T187: how many shaders the cache did not have (precompilation coverage); a line every 50 misses
         uint64_t m = __atomic_add_fetch(&vk_spirv_misses, 1, __ATOMIC_RELAXED);
         vk_spirv_tl_misses++;
@@ -349,8 +368,8 @@ uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t 
     shaderc_compile_options_t o = shaderc_compile_options_initialize();
     shaderc_compile_options_set_target_env(o, shaderc_target_env_vulkan, g_vk.api_version >= VK_API_VERSION_1_3 ? shaderc_env_version_vulkan_1_3 : shaderc_env_version_vulkan_1_2);
     shaderc_compile_options_set_target_spirv(o, g_vk.api_version >= VK_API_VERSION_1_3 ? shaderc_spirv_version_1_6 : shaderc_spirv_version_1_5);
-    shaderc_compile_options_set_optimization_level(o, stage_opt(stage) ? shaderc_optimization_level_performance
-                                                                     : shaderc_optimization_level_zero);
+    shaderc_compile_options_set_optimization_level(o, compile_opt ? shaderc_optimization_level_performance
+                                                                  : shaderc_optimization_level_zero);
     shaderc_compilation_result_t r = shaderc_compile_into_spv(comp, src, strlen(src), kind_of(stage), name, "main", o);
     shaderc_compile_options_release(o);
     if (shaderc_result_get_compilation_status(r) != shaderc_compilation_status_success) {
@@ -367,7 +386,7 @@ uint32_t *vk_glsl_to_spirv(const char *src, int stage, const char *name, size_t 
         memcpy(out, shaderc_result_get_bytes(r), n);
         *nwords = n / 4;
         if (stage == STAGE_VERTEX) out = no_contraction(out, nwords);
-        if (!nocache) cache_store(h, out, *nwords);
+        if (!nocache) cache_store(store_h, out, *nwords);
     }
     shaderc_result_release(r);
     return out;

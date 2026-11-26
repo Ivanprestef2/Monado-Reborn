@@ -87,10 +87,13 @@ static inline uint64_t xcde_early_limiter_step(XcdeEarlyLimiter *lim, uint64_t n
 // - Absorbs frame-to-frame work-time variance (e.g. moving vs standing still) right before
 //   vkQueuePresentKHR so present-to-present intervals stay flat without adding a queued frame.
 // - When GPU/CPU-bound (work >= period), waits 0 ns and re-anchors cleanly without burst catch-up.
-enum { XCDE_PACER_WINDOW = 16 };
+enum { XCDE_PACER_WINDOW = 16, XCDE_PACER_INFLIGHT = 4 };
 typedef struct {
     uint64_t next_present_ns;
     uint64_t frame_start_ns;
+    uint64_t inflight_start[XCDE_PACER_INFLIGHT];
+    uint32_t inflight_head;
+    uint32_t inflight_count;
     uint64_t work_hist[XCDE_PACER_WINDOW];
     uint32_t work_idx;
     uint32_t work_count;
@@ -113,6 +116,25 @@ static inline uint64_t xcde_present_pacer_lead_ns(const XcdePresentPacer *p, uin
     return lead;
 }
 
+static inline void xcde_present_pacer_push_start(XcdePresentPacer *p, uint64_t start_ns) {
+    p->frame_start_ns = start_ns;
+    if (p->inflight_count == XCDE_PACER_INFLIGHT) {
+        p->inflight_head = (p->inflight_head + 1u) % XCDE_PACER_INFLIGHT;
+        p->inflight_count--;
+    }
+    uint32_t slot = (p->inflight_head + p->inflight_count) % XCDE_PACER_INFLIGHT;
+    p->inflight_start[slot] = start_ns;
+    p->inflight_count++;
+}
+
+static inline uint64_t xcde_present_pacer_pop_start(XcdePresentPacer *p) {
+    if (!p->inflight_count) return p->frame_start_ns;
+    uint64_t start_ns = p->inflight_start[p->inflight_head];
+    p->inflight_head = (p->inflight_head + 1u) % XCDE_PACER_INFLIGHT;
+    p->inflight_count--;
+    return start_ns;
+}
+
 static inline uint64_t xcde_present_pacer_frame_start(XcdePresentPacer *p, uint64_t now_ns, int target_fps) {
     if (target_fps <= 0) {
         xcde_present_pacer_reset(p);
@@ -122,22 +144,26 @@ static inline uint64_t xcde_present_pacer_frame_start(XcdePresentPacer *p, uint6
     if (!p->next_present_ns || p->last_fps != target_fps) {
         xcde_present_pacer_reset(p);
         p->last_fps = target_fps;
-        p->frame_start_ns = now_ns;
         p->next_present_ns = now_ns + period_ns;
+        xcde_present_pacer_push_start(p, now_ns);
         return 0;
     }
-    if (now_ns >= p->next_present_ns) {
-        p->frame_start_ns = now_ns;
-        p->next_present_ns = now_ns + period_ns;
+    // [XCDE] Issue #261: with async vk-render, frame N+1 may call frame_start() before frame N calls
+    // before_present(). Never reset next_present_ns while an earlier frame is still in flight (doing so
+    // would push frame N's present deadline forward by a full period and cause a double-frame stutter).
+    uint64_t target_present = p->next_present_ns + (uint64_t)p->inflight_count * period_ns;
+    if (now_ns >= target_present) {
+        if (!p->inflight_count) p->next_present_ns = now_ns + period_ns;
+        xcde_present_pacer_push_start(p, now_ns);
         return 0;
     }
     uint64_t lead_ns = xcde_present_pacer_lead_ns(p, period_ns);
-    uint64_t start_target = p->next_present_ns > lead_ns ? p->next_present_ns - lead_ns : 0;
+    uint64_t start_target = target_present > lead_ns ? target_present - lead_ns : 0;
     if (now_ns < start_target) {
-        p->frame_start_ns = start_target;
+        xcde_present_pacer_push_start(p, start_target);
         return start_target;
     }
-    p->frame_start_ns = now_ns;
+    xcde_present_pacer_push_start(p, now_ns);
     return 0;
 }
 
@@ -147,8 +173,9 @@ static inline uint64_t xcde_present_pacer_before_present(XcdePresentPacer *p, ui
         return 0;
     }
     uint64_t period_ns = xcde_fps_period_ns(target_fps);
-    if (p->frame_start_ns && now_ns >= p->frame_start_ns) {
-        uint64_t work_ns = now_ns - p->frame_start_ns;
+    uint64_t start_ns = xcde_present_pacer_pop_start(p);
+    if (start_ns && now_ns >= start_ns) {
+        uint64_t work_ns = now_ns - start_ns;
         if (work_ns < 250000000ull) {
             p->work_hist[p->work_idx] = work_ns;
             p->work_idx = (p->work_idx + 1) % XCDE_PACER_WINDOW;

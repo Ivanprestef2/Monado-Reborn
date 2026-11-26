@@ -540,6 +540,7 @@ static void job_end(void) {
     pthread_mutex_lock(&inflight_lock);
     fseek(inflight, (long)inflight_slot * 8, SEEK_SET);
     fwrite(&z, 8, 1, inflight);
+    fflush(inflight);
     pthread_mutex_unlock(&inflight_lock);
 }
 static void inflight_open(void) {
