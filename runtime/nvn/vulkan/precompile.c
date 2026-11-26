@@ -1115,11 +1115,16 @@ int vk_precompile_main(const char *root) {
     setenv("LARECOMP_HIDDEN", "1", 1);
     ui_window_init();  // (the game's own Vulkan device - same driver caches - in a hidden window)
     if (!use_libs) g_vk.gpl = false;
-    // The libraries go to the driver's own disk cache only, not to cache/vk_pipelines.bin: with them that file grew to
-    // 698 MB, and the game reads it whole into memory at start (+0.7 GB on 8 GB PCs). The game's own builds of these
-    // libraries then hit the driver's cache (measured: tasks.md T187).
+    // [XCDE] Issue #261: when GPL is active, keep a fresh empty VkPipelineCache during the GPL shader-library
+    // passes (build + seed) and save it to cache/vk_pipelines.bin (capped <= 192 MiB) BEFORE the whole-pipeline pass
+    // starts. That protects precompiled GPL shader libraries from NVIDIA's global driver cache eviction without
+    // bloating cache/vk_pipelines.bin with thousands of whole pipelines (~700 MB previously).
     vkDestroyPipelineCache(g_vk.dev, g_vk.pcache, NULL);
     g_vk.pcache = VK_NULL_HANDLE;
+    if (g_vk.gpl) {
+        VkPipelineCacheCreateInfo pc = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+        if (vkCreatePipelineCache(g_vk.dev, &pc, NULL, &g_vk.pcache) != VK_SUCCESS) g_vk.pcache = VK_NULL_HANDLE;
+    }
     // Both the game files and Vulkan are usable now. Invalidate completion before any destructive cleanup, so a failed
     // spawn, root validation or device initialization keeps a valid stamp. The loose marker belongs to the old mode too.
     if (!remove_precompile_file("cache/precompile_done.txt") ||
@@ -1221,6 +1226,13 @@ int vk_precompile_main(const char *root) {
         printf("[precompile] seed (optional): %zu variants, %llu built, %llu failed, %llu already built by the program pass, in %.1f s%c", nseed,
                (unsigned long long)n_seed_built, (unsigned long long)atomic_load(&n_seed_failed),
                (unsigned long long)atomic_load(&n_seed_reused), pass_ms[P_SEED] / 1000.0, 10);
+    }
+    if (g_vk.pcache) {
+        extern size_t vk_pipeline_cache_save_force(void);
+        size_t saved = vk_pipeline_cache_save_force();
+        if (saved) printf("[precompile] saved GPL library pipeline cache (%.1f MB)%c", saved / (1024.0 * 1024.0), 10);
+        vkDestroyPipelineCache(g_vk.dev, g_vk.pcache, NULL);
+        g_vk.pcache = VK_NULL_HANDLE;
     }
     if (nvar) {  // [XCDE] T240: the whole optimized pipelines (XCDE_PRECOMPILE_PIPELINES=0: pieces only, as before)
         if (!pipelines_run && amd_igpu) {

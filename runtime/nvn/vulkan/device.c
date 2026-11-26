@@ -689,22 +689,24 @@ void vk_pipeline_cache_save_async(void) {
     pthread_detach(t);
 }
 
-void vk_pipeline_cache_save(void) {
+static size_t vk_pipeline_cache_save_impl(bool force) {
     // [XCDE] test runs (hidden window: rtrun.sh / drive_env.sh) read the player's cache but never write it: a test build
     // translates shaders differently, and the last process to exit replaced the file - the player's next start then
     // compiled ~730 pipelines while loading (24 s, 1-2 s freezes; party session's diagnosis). XCDE_SAVE_CACHE=1: save anyway.
-    if (getenv("LARECOMP_HIDDEN") && !getenv("XCDE_SAVE_CACHE")) return;
+    if (!g_vk.pcache) return 0;
+    if (!force && getenv("LARECOMP_HIDDEN") && !getenv("XCDE_SAVE_CACHE")) return 0;
     size_t sz = 0;
-    if (vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, NULL) != VK_SUCCESS || !sz) return;
+    if (vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, NULL) != VK_SUCCESS || !sz) return 0;
     if (sz > (size_t)PC_CACHE_MAX) {
-        LOG("[vk] pipeline cache not saved: %zu bytes exceeds the %ld MiB safety limit\\n", sz, PC_CACHE_MAX / (1024 * 1024));
-        return;
+        LOG("[vk] pipeline cache not saved: %zu bytes exceeds the %ld MiB safety limit\n", sz, PC_CACHE_MAX / (1024 * 1024));
+        return 0;
     }
     void *data = malloc(sz);
     if (!data) {
-        LOG("[vk] pipeline cache not saved: out of memory for %zu bytes\\n", sz);
-        return;
+        LOG("[vk] pipeline cache not saved: out of memory for %zu bytes\n", sz);
+        return 0;
     }
+    size_t saved = 0;
     if (vkGetPipelineCacheData(g_vk.dev, g_vk.pcache, &sz, data) == VK_SUCCESS) {
         mkdir("cache", 0755);
         char tmp[64];  // (per process: test runs and the user's game save the same cache)
@@ -713,12 +715,19 @@ void vk_pipeline_cache_save(void) {
         if (f) {
             bool ok = fwrite(data, 1, sz, f) == sz;
             if (fclose(f) != 0) ok = false;
-            if (ok) { if (!xcde_atomic_replace(tmp, "cache/vk_pipelines.bin")) remove(tmp); }
-            else remove(tmp);
+            if (ok) {
+                if (xcde_atomic_replace(tmp, "cache/vk_pipelines.bin")) saved = sz;
+                else remove(tmp);
+            } else {
+                remove(tmp);
+            }
         }
     }
     free(data);
+    return saved;
 }
+void vk_pipeline_cache_save(void) { (void)vk_pipeline_cache_save_impl(false); }
+size_t vk_pipeline_cache_save_force(void) { return vk_pipeline_cache_save_impl(true); }
 
 // ================================================================== swapchain
 static bool g_vsync_fifo;  // FIFO chosen by the V-Sync option (backend_present's repeat presents)
