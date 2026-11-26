@@ -88,7 +88,18 @@ static void q_wait_space(uint64_t n) {
     q_r_cached = atomic_load_explicit(&q_r, memory_order_acquire);
     if (q_wl + n - q_r_cached <= Q_SIZE) return;
     uint64_t t0 = plat_now_ns();
-    while (q_wl + n - (q_r_cached = atomic_load_explicit(&q_r, memory_order_acquire)) > Q_SIZE) q_pause();
+    unsigned spins = 0;
+    while (q_wl + n - (q_r_cached = atomic_load_explicit(&q_r, memory_order_acquire)) > Q_SIZE) {
+        if ((++spins & 1023u) == 0) {
+#ifdef _WIN32
+            SwitchToThread();
+#else
+            sched_yield();
+#endif
+        } else {
+            q_pause();
+        }
+    }
     q_stat_full_ns += plat_now_ns() - t0;
 }
 static void *q_alloc(uint32_t op, VkCommandBuffer cb, size_t payload) {

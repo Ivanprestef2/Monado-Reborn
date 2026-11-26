@@ -3518,15 +3518,22 @@ static void lib_evict(uint64_t now, uint64_t min_age) {
             gpl_tab[i].last_used + min_age < now)
             c[nc++] = &gpl_tab[i];
     qsort(c, nc, sizeof *c, le_cmp);
+    // [XCDE] Issue #261: cap per-call library destruction and destroy handles outside gpl_rw/gpl_lock
+    // (matching pipe_evict/gpl_reap) so evicting hundreds of GPL libraries never stalls vk-render or workers.
+    enum { MAX_LIB_DESTROY = 16 };
     uint64_t want = total - budget * 9 / 10, n = want < nc ? want : nc;
+    if (n > MAX_LIB_DESTROY) n = MAX_LIB_DESTROY;
+    VkPipeline dead[MAX_LIB_DESTROY];
     for (uint64_t i = 0; i < n; i++) {
-        vkDestroyPipeline(g_vk.dev, c[i]->lib, NULL);  // (libraries are never bound: no GPU work uses them)
+        dead[i] = c[i]->lib;
         c[i]->lib = VK_NULL_HANDLE;
         atomic_store(&c[i]->state, 3);
     }
     atomic_fetch_sub(&gpl_libs_total, n);
     pthread_mutex_unlock(&gpl_lock);
     pthread_rwlock_unlock(&gpl_rw);
+    for (uint64_t i = 0; i < n; i++)
+        vkDestroyPipeline(g_vk.dev, dead[i], NULL);  // (libraries are never bound: no GPU work uses them)
     if (n) {
         stat_lib_evicted += n;
         static int nlog;
@@ -4227,13 +4234,16 @@ void vk_prewarm_hold(uint64_t frame_draws) {
         reg_forced = e != NULL;
         reg_min = e ? atoi(e) : 16;
         e = getenv("XCDE_REG_HOLD_MS");
-        reg_ms = e ? atoi(e) : 3000;
+        reg_ms = e ? atoi(e) : 500;
     }
     extern bool xcde_in_cutscene(void);
     int burst = atomic_exchange(&g_reg_burst, 0);
     bool reg_hold = reg_min > 0 && burst >= reg_min && reg_ms > 0 && (reg_forced || xcde_in_cutscene());
-    if (!max_ms || sync_shaders() || (frame_draws > (uint64_t)max_draws && !reg_hold)) return;
-    int lim = frame_draws > (uint64_t)max_draws && reg_ms < max_ms ? reg_ms : max_ms;
+    // [XCDE] Issue #261: only hold low-draw loading frames when 0 draws occurred or new programs were registered,
+    // so menus/map/pause/dialogue frames with <=150 draws never freeze for up to 8 s on background prewarm jobs.
+    bool load_hold = frame_draws <= (uint64_t)max_draws && (frame_draws == 0 || burst > 0);
+    if (!max_ms || sync_shaders() || (!load_hold && !reg_hold)) return;
+    int lim = !load_hold && reg_ms < max_ms ? reg_ms : max_ms;
     uint64_t t0 = SDL_GetTicksNS(), dl = t0 + (uint64_t)lim * 1000000ull;
     int n0 = -1;
     for (;;) {
@@ -5530,18 +5540,15 @@ static int pt_state = -1;  // 1: tracking, 0: none
 static bool pt_init(void) {
     if (pt_state >= 0) return pt_state;
 #ifdef __linux__
-    // [XCDE] GitHub #233: Linux write-watch uses mprotect(PROT_READ) + SIGSEGV on HEAP_BASE.
-    // When the guest heap is imported via VK_EXT_external_memory_host (userptr BO, not dma-buf),
-    // write-protecting pages in the imported range causes Linux DRM drivers (e.g. amdgpu/RADV
-    // hmm_range_fault with HMM_PFN_REQ_WRITE) to reject CS submission with -EPERM (VK_ERROR_DEVICE_LOST).
-    // Only allow Linux write-watch when the heap is dma-buf-backed or host-pointer import is off,
-    // unless explicitly forced via XCDE_LINUX_WRITE_WATCH=1.
-    uint64_t dma_sz = 0;
+    // [XCDE] GitHub #233 / #261: Linux write-watch uses mprotect(PROT_READ) + SIGSEGV on HEAP_BASE.
+    // On userptr host-imported heaps it causes VK_ERROR_DEVICE_LOST (-EPERM in hmm_range_fault), and on
+    // dma-buf GTT heaps (e.g. RADV) mprotecting scattered 4 KB ranges as the camera moves shatters the
+    // 3.3 GB mapping into thousands of VMAs, causing mmap_lock + TLB shootdown stutters and a permanent
+    // CPU-bound FPS drop (140 -> 90 fps). Keep Linux write-watch off by default unless explicitly opted in.
     const char *ww_env = getenv("XCDE_LINUX_WRITE_WATCH");
-    if (!(ww_env && atoi(ww_env) > 0) && g_vk.host_import && !getenv("LARECOMP_VK_NO_GMEM") &&
-        plat_gpu_heap_fd(HEAP_BASE, VC_PAGE, &dma_sz) < 0) {
+    if (!(ww_env && atoi(ww_env) > 0)) {
         pt_state = 0;
-        LOG("[vk] no page write tracking: Linux mprotect conflicts with host-imported guest heap (set XCDE_LINUX_WRITE_WATCH=1 to force)\n");
+        LOG("[vk] no page write tracking: Linux mprotect write-watch disabled by default (set XCDE_LINUX_WRITE_WATCH=1 to enable)\n");
         return false;
     }
 #endif
@@ -5711,7 +5718,14 @@ void vc_flush(void) {
     for (int i = 0; i < vc_npend;) {
         uint64_t lo = vc_tab[vc_pend[i]].lo, hi = vc_tab[vc_pend[i]].hi;
         int j = i + 1;
-        for (; j < vc_npend && vc_tab[vc_pend[j]].lo <= hi + 64 * VC_PAGE; j++)
+#ifdef __linux__
+        // [XCDE] Issue #261: Linux write-watch mprotect(PROT_READ)s every page in [lo, hi); coalescing across
+        // 256 KB gaps write-protects unrelated active guest heap pages and triggers SIGSEGV/TLB shootdown storms.
+        const uint64_t coalesce_gap = 0;
+#else
+        const uint64_t coalesce_gap = 64 * VC_PAGE;
+#endif
+        for (; j < vc_npend && vc_tab[vc_pend[j]].lo <= hi + coalesce_gap; j++)
             if (vc_tab[vc_pend[j]].hi > hi) hi = vc_tab[vc_pend[j]].hi;
         uint64_t pg = VC_PAGE;
         int n = plat_written_pages(HEAP_BASE + lo, hi - lo, pages, 4096, &pg);

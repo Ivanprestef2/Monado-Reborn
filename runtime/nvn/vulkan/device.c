@@ -1876,28 +1876,33 @@ void ui_window_init(void) {
         }
         SDL_SetWindowFullscreen(window, true);
     }
-    {   // [XCDE] DLSS: Streamline must be loaded before the Vulkan instance (dlss.cpp)
+    bool precompiling = getenv("XCDE_PRECOMPILING") != NULL;
+    if (!precompiling) {  // [XCDE] DLSS: Streamline must be loaded before the Vulkan instance (dlss.cpp); skip during offline --precompile
         extern bool dlss_init_early(void);
         dlss_init_early();
     }
     create_instance();
     if (!SDL_Vulkan_CreateSurface(window, g_vk.inst, NULL, &g_vk.surface)) FATAL("SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
     pick_device();
-    { extern void dlss_validate_adapter(VkPhysicalDevice phys, uint32_t api, uint32_t qfam);
-      dlss_validate_adapter(g_vk.phys, g_vk.api_version, g_vk.qfam); }
-    create_device();
-    extern bool dlss_create_surface(void *window, VkInstance instance, VkPhysicalDevice phys,
-                                    uint32_t qfam, VkSurfaceKHR *surface);
-    VkSurfaceKHR hooked_surface;
-    if (dlss_create_surface(window, g_vk.inst, g_vk.phys, g_vk.qfam, &hooked_surface)) {
-        SDL_Vulkan_DestroySurface(g_vk.inst, g_vk.surface, NULL);
-        g_vk.surface = hooked_surface;
-        sc_proxies();
+    if (!precompiling) {
+        extern void dlss_validate_adapter(VkPhysicalDevice phys, uint32_t api, uint32_t qfam);
+        dlss_validate_adapter(g_vk.phys, g_vk.api_version, g_vk.qfam);
     }
-    if (g_settings.upscaler_auto || g_settings.upscaler == UPSCALE_DLSS) {
-        extern bool dlss_available(void);
-        g_settings.upscaler = dlss_available() ? UPSCALE_DLSS : UPSCALE_FSR1;
-        LOG("[upscaler] auto selected %s\n", dlss_available() ? "DLSS SR" : "FSR 1 spatial");
+    create_device();
+    if (!precompiling) {
+        extern bool dlss_create_surface(void *window, VkInstance instance, VkPhysicalDevice phys,
+                                        uint32_t qfam, VkSurfaceKHR *surface);
+        VkSurfaceKHR hooked_surface;
+        if (dlss_create_surface(window, g_vk.inst, g_vk.phys, g_vk.qfam, &hooked_surface)) {
+            SDL_Vulkan_DestroySurface(g_vk.inst, g_vk.surface, NULL);
+            g_vk.surface = hooked_surface;
+            sc_proxies();
+        }
+        if (g_settings.upscaler_auto || g_settings.upscaler == UPSCALE_DLSS) {
+            extern bool dlss_available(void);
+            g_settings.upscaler = dlss_available() ? UPSCALE_DLSS : UPSCALE_FSR1;
+            LOG("[upscaler] auto selected %s\n", dlss_available() ? "DLSS SR" : "FSR 1 spatial");
+        }
     }
     create_swapchain();
     vk_exec_init();
