@@ -1,7 +1,6 @@
 // T037: atomic save writes and commits (runtime/services/fs.c).
 // fs.c is included so its static write / journal helpers are driven directly; pwrite is mocked to return short writes,
-// ENOSPC and EINTR. Build with -ffunction-sections -fdata-sections -Wl,--gc-sections (the service handlers that need the
-// rest of the runtime are not referenced here).
+// ENOSPC and EINTR. The runtime symbols referenced by the service handlers are stubbed below so the test links on its own.
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
@@ -82,6 +81,21 @@ void flags_ext_save_read(const char *path, uint64_t addr, int64_t off, int64_t s
 void flags_ext_save_written(const char *path, uint64_t addr, int64_t off, int64_t size) {
     (void)path; (void)addr; (void)off; (void)size;
 }
+
+// The Windows linker keeps the service-section handlers even with --gc-sections; these make the whole fs.c unit link
+// without pulling in the rest of the runtime (the test never calls the service registration paths).
+const char *g_romfs_dir = "targets/romfs";
+bool gf_is_package(void) { return false; }
+bool rando_romfs_override(const char *path, char *out, size_t cap) { (void)path; (void)out; (void)cap; return false; }
+const char *rando_seed_dir(void) { return NULL; }
+bool rvfs_init(const char *dir, char *why, size_t why_size) { (void)dir; (void)why; (void)why_size; return false; }
+uint64_t rvfs_size(void) { return 0; }
+int64_t rvfs_read(uint8_t *dst, uint64_t size, uint64_t off) { (void)dst; (void)size; (void)off; return 0; }
+const char *rvfs_file_at(uint64_t off) { (void)off; return NULL; }
+void romfs_file_read_hook(const char *path) { (void)path; }
+Service *service_new(const char *name, ServiceHandler h, void *state) { (void)name; (void)h; (void)state; return NULL; }
+void ipc_return_object(IpcResp *resp, Service *s) { (void)resp; (void)s; }
+void rt_fatal_trace(void) { abort(); }
 
 static int fails;
 #define CHECK(cond) do { if (!(cond)) { printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); fails++; } } while (0)

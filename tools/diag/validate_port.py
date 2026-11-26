@@ -104,9 +104,8 @@ def main():
         'test_condvar': ['runtime/platform/windows.c', 'runtime/log.c', 'runtime/diag/diag.c', 'runtime/diag/sampler.c', '-lwinmm', '-ldbghelp'],
         'test_foliage_distance': ['runtime/hle/foliage_distance.c'],
         'test_graphics_options': ['runtime/hle/graphics.c'],
-        # [XCDE] T037: atomic save writes/commits; fs.c is included by the test, keep only what it references.
-        'test_fs_commit': ['-O1', '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections',
-                           str(sdk / 'lib/libwinpthread.dll.a')],
+        # [XCDE] T037: atomic save writes/commits; fs.c is included by the test.
+        'test_fs_commit': ['-O1', str(sdk / 'lib/libwinpthread.dll.a')],
         # [XCDE] T282: the precompile signature. Its own source unit compiles with the macro instead of the header.
         'test_precompile_sig': ['runtime/nvn/vulkan/precompile_sig.c', '-DXCDE_SHADER_SIG="native"'],
     }

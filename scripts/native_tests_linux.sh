@@ -62,7 +62,7 @@ run_test test_precompile_sig -std=gnu11 -Wall -Wextra -Werror -DXCDE_SHADER_SIG=
 # [XCDE] T280: the game files from a .nup package (runtime/services/game_files.c)
 run_test test_nup_package -std=gnu11 -Wall -Wextra -Werror -D_GNU_SOURCE tests/native/test_nup_package.c runtime/services/game_files.c
 # [XCDE] T037: atomic save writes and commits (short pwrite, ENOSPC / fsync failures, journal kept on a failed commit).
-run_test test_fs_commit -std=gnu11 -w -ffunction-sections -fdata-sections -Wl,--gc-sections tests/native/test_fs_commit.c -lpthread
+run_test test_fs_commit -std=gnu11 -w tests/native/test_fs_commit.c -lpthread
 
 if pkg-config --exists shaderc 2>/dev/null || echo '#include <shaderc/shaderc.h>' | "$CC" -x c -E - >/dev/null 2>&1; then
   SHADERC_LIBS="$(pkg-config --libs shaderc 2>/dev/null || echo -lshaderc_shared)"

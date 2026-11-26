@@ -64,7 +64,7 @@ build/test/test_texture_index.exe
 $Z -O1 -ffunction-sections -fdata-sections -Wl,--gc-sections -Iruntime -o build/test/test_romfs_cache.exe tests/native/test_romfs_cache.c $M/lib/libwinpthread.dll.a
 build/test/test_romfs_cache.exe build/test
 # [XCDE] T037: atomic save writes and commits (short pwrite, ENOSPC / fsync failures, journal kept on a failed commit).
-$Z -O1 -w -ffunction-sections -fdata-sections -Wl,--gc-sections -Iruntime -o build/test/test_fs_commit.exe tests/native/test_fs_commit.c $M/lib/libwinpthread.dll.a
+$Z -O1 -w -Iruntime -o build/test/test_fs_commit.exe tests/native/test_fs_commit.c $M/lib/libwinpthread.dll.a
 build/test/test_fs_commit.exe
 
 # [XCDE] T266: middle-button stick click as a pulse, dropped with ZL held.
