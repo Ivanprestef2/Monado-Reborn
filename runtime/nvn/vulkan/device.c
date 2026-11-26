@@ -811,6 +811,8 @@ static int repeat_presents(void) {
     return n;
 }
 
+static uint32_t g_precompile_target_w, g_precompile_target_h;
+
 static void create_swapchain(void) {
     VkSurfaceCapabilitiesKHR caps;
     VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps));
@@ -853,9 +855,16 @@ static void create_swapchain(void) {
     g_vk.sc_extent = ext;
     // [XCDE] v12: the wide-box UV remap (uvb, translate.c) can only matter when the window is not 16:9.
     // Set here, right after the swapchain is (re)created; shaders compiled earlier keep true by default.
+    // [XCDE] Issue #261: offline --precompile creates a hidden 1280x720 window (LARECOMP_HIDDEN skips fullscreen),
+    // which would force g_wide_box_possible=false and cause 100% fragment shader cache misses on non-16:9 displays
+    // (16:10 laptops, Steam Deck, 21:9/32:9 ultrawides). Use the resolved gameplay target size when precompiling.
     extern _Atomic bool g_wide_box_possible;  // [XCDE] T282 review: written here, read by translating threads
-    g_wide_box_possible = fabs((double)ext.width / (double)ext.height - 16.0 / 9.0) > 0.02;
-    LOG("[vk] wide box remap: %s (window %ux%u)\n", g_wide_box_possible ? "on" : "off", ext.width, ext.height);
+    uint32_t wb_w = ext.width, wb_h = ext.height;
+    bool precompiling_wb = getenv("XCDE_PRECOMPILING") != NULL && g_precompile_target_w > 0 && g_precompile_target_h > 0;
+    if (precompiling_wb) { wb_w = g_precompile_target_w; wb_h = g_precompile_target_h; }
+    g_wide_box_possible = wb_h > 0 && fabs((double)wb_w / (double)wb_h - 16.0 / 9.0) > 0.02;
+    LOG("[vk] wide box remap: %s (%s %ux%u)\n", g_wide_box_possible ? "on" : "off",
+        precompiling_wb ? "precompile target" : "window", wb_w, wb_h);
     g_vk.sc_count = 0;  // (count first: AMD's frame-generation swapchain fills exactly what it reports)
     sc_images(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, NULL);
     if (g_vk.sc_count > 8) g_vk.sc_count = 8;
@@ -1877,6 +1886,26 @@ void ui_window_init(void) {
         SDL_SetWindowFullscreen(window, true);
     }
     bool precompiling = getenv("XCDE_PRECOMPILING") != NULL;
+    if (precompiling) {
+        g_precompile_target_w = win_w > 0 ? (uint32_t)win_w : 1280u;
+        g_precompile_target_h = win_h > 0 ? (uint32_t)win_h : 720u;
+        if ((g_settings.fullscreen || forced_fs) && !getenv("LARECOMP_WINDOW")) {
+            SDL_DisplayID disp = 0;
+            if (g_settings.display_index >= 0) {
+                int ndisp = 0;
+                SDL_DisplayID *disps = SDL_GetDisplays(&ndisp);
+                if (disps && g_settings.display_index < ndisp) disp = disps[g_settings.display_index];
+                SDL_free(disps);
+            }
+            if (!disp) disp = SDL_GetDisplayForWindow(window);
+            if (!disp) disp = SDL_GetPrimaryDisplay();
+            const SDL_DisplayMode *dm = disp ? SDL_GetDesktopDisplayMode(disp) : NULL;
+            if (dm && dm->w > 0 && dm->h > 0) {
+                g_precompile_target_w = (uint32_t)dm->w;
+                g_precompile_target_h = (uint32_t)dm->h;
+            }
+        }
+    }
     if (!precompiling) {  // [XCDE] DLSS: Streamline must be loaded before the Vulkan instance (dlss.cpp); skip during offline --precompile
         extern bool dlss_init_early(void);
         dlss_init_early();

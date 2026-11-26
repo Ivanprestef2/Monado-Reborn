@@ -3695,13 +3695,9 @@ static void build_pipeline_(void *arg) {
     tl_libs_new = 0;
     if (g_vk.gpl && (!sync_shaders() || det_gpl)) {
         // a whole pipeline the disk cache already holds: no compile
-        // [XCDE] T211 / Issue #261: link first when the shader libraries are ALREADY in memory (~0.02-0.3 ms).
-        // When the libraries are NOT in memory yet and pipelineCreationCacheControl is supported, check the
-        // pipeline/driver cache first with FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT: a precompiled or previously
-        // cached whole pipeline hits in <0.5 ms (avoiding 22-113 ms on-the-fly gpl_pre/gpl_fs compiles +
-        // background gpl_optimize), while a miss returns immediately in microseconds and falls back to gpl_link.
-        bool actual_libs_ready = gpl_ready(gpl_key_pre(&pp->k)) && (!pp->k.prog->fs || gpl_ready(gpl_key_fs(&pp->k)));
-        bool libs_ready = !det_gpl && (actual_libs_ready || (!g_vk.pipeline_cache_control && link_first()));
+        // [XCDE] T211: link first when the shader libraries are already in memory (~0.3 ms; a whole pipeline from the
+        // driver cache took 2-21 ms on NVIDIA Windows): the optimized one replaces it from the low-priority queue as for any link
+        bool libs_ready = !det_gpl && (link_first() || (gpl_ready(gpl_key_pre(&pp->k)) && (!pp->k.prog->fs || gpl_ready(gpl_key_fs(&pp->k)))));
         // [XCDE] T240: a prewarmed pipeline (an area's / a scene's recorded variant, built on its loading screen) is
         // taken whole from the driver's cache when the precompilation put it there (precompile.c builds every recorded
         // variant's optimized pipeline): the scene starts with its final pipelines instead of fast links that a
