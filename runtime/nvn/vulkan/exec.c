@@ -2426,21 +2426,25 @@ static const char *gtao_src(uint64_t code) {
 // the open world (daylight, the torches far away) that left the characters too dark (face R 71 -> 41 in the canyon
 // capture). The program zeroes r41/r42/r43 at the light-loop prologue, sums one point light per iteration and adds the
 // directional sun of cb3[13] as the last fma (guest pc 1548); the sum then becomes the Lambert/1-pi term
-// (pc 1518..1598). The patch scales r41/r42/r43 at the head of that epilogue (label `case 5400`), so the sun keeps its
-// value: in daylight the local sum is ~0 and the character renders exactly like the game (the capture is byte-identical
-// to the unpatched build), while under the corridor's torches the local sum is nearly the whole colour, so the image
-// matches the old whole-colour fix (mean |diff| 0.5/255 over the frame; face 157,121,99 vs 154,116,95). The factor went
-// 0.35 -> 0.27 because the sun is no longer dimmed. XCDE_CHAR_LIGHT=<factor> sets the factor, XCDE_CHAR_LIGHT=1 keeps the
-// game's values. The anchor is a `case` label on purpose: the `// pc` comments only exist with LARECOMP_SAVE_MSL. The
-// patched source has its own SPIR-V cache identity; nothing else is touched.
+// (pc 1518..1598). The patch scales r41/r42/r43 right before the first epilogue instruction (guest pc 1518, multiplying
+// the sun channel cb3[13][0]), so the sun keeps its value: in daylight the local sum is ~0 and the character renders
+// exactly like the game (the capture is byte-identical to the unpatched build), while under the corridor's torches the
+// local sum is nearly the whole colour, so the image matches the old whole-colour fix (mean |diff| 0.5/255 over the
+// frame; face 157,121,99 vs 154,116,95). The factor went 0.35 -> 0.27 because the sun is no longer dimmed.
+// XCDE_CHAR_LIGHT=<factor> sets the factor, XCDE_CHAR_LIGHT=1 keeps the game's values.
+//
+// GitHub #58 / #268: anchor on the emitted epilogue instruction rather than a `case 5400u:` label — the CFG structurizer
+// (try_emit_structured) eliminates `switch (pc)` labels, while the emitted epilogue instruction is identical in structured
+// CFG, switch CFG (XCDE_STRUCTURED_CFG=0), and annotated dumps (LARECOMP_SAVE_MSL=1). The patched source has its own
+// SPIR-V cache identity; nothing else is touched.
 static const char *char_light_src(uint64_t code, const char *src, char **out_patch) {
-    static int init;
-    static float scale = 0.27f;
+    static _Thread_local int init;
+    static _Thread_local float scale = 0.27f;
     *out_patch = NULL;
     if (!init) { init = 1; const char *e = getenv("XCDE_CHAR_LIGHT"); if (e) scale = (float)atof(e); }
     if (!code || !(scale > 0.0f) || scale == 1.0f) return src;
     if (hmix(1469598103934665603ull, (const void *)(uintptr_t)(code + 0x30), 0x200) != 0xe4e7bf3a80de7cf3ull) return src;
-    static const char anchor[] = "  case 5400u:\n";
+    static const char anchor[] = "    r2 = as_u((as_f(r40) * as_f(cb3[13][0])));\n";
     const char *at = strstr(src, anchor);
     if (!at) {
         static int dumped;
@@ -2451,7 +2455,6 @@ static const char *char_light_src(uint64_t code, const char *src, char **out_pat
         }
         return src;
     }
-    at += sizeof anchor - 1;
     char f[32], ins[160];
     snprintf(f, sizeof f, "%.6g", (double)scale);
     snprintf(ins, sizeof ins, "    r41 = as_u(as_f(r41) * %sf);\n    r42 = as_u(as_f(r42) * %sf);\n    r43 = as_u(as_f(r43) * %sf);\n", f, f, f);
