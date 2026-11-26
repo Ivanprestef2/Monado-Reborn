@@ -422,7 +422,7 @@ static Service *open_romfs_storage(void) {
 typedef struct { char root[1024]; bool save; int journal; } HostFs;  // (save: a save_N mount; journal: below, or -1)
 typedef struct { int fd; char path[1100]; char root[1024]; bool save; int journal; } HostFile;  // (root: its mount)
 typedef struct { XcdeDir *d; char path[1024]; int mode; } HostDir;
-static void journal_touch(int j);  // (save commits, below)
+static int journal_touch(int j);  // (save commits, below)
 
 static const char *in_path(IpcReq *req, int i) {
     if (i < req->nx) return (const char *)(uintptr_t)req->x[i].addr;
@@ -439,6 +439,29 @@ static uint32_t errno_result(void) {
     if (errno == EEXIST) return FS_PATH_EXISTS;
     if (errno == ENOTEMPTY) return FS_NOT_EMPTY;
     return MAKE_RESULT(2, 4000);
+}
+
+static int fsync_retry(int fd) {
+    int rc;
+    do rc = fsync(fd); while (rc && errno == EINTR);
+    return rc;
+}
+
+// A short pwrite is not success: keep writing until every byte is on the host file (or report the failure).
+static int pwrite_all(int fd, const void *buf, size_t size, int64_t off) {
+    const uint8_t *p = buf;
+    while (size) {
+        ssize_t n = pwrite(fd, p, size, (off_t)off);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (!n) { errno = EIO; return -1; }
+        p += n;
+        size -= (size_t)n;
+        off += n;
+    }
+    return 0;
 }
 
 static void file(Service *s, IpcReq *req, IpcResp *resp) {
@@ -467,17 +490,20 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
     case 1: {  // Write(option, offset, size) <- A
         int64_t off = IN(int64_t, 8), size = IN(int64_t, 16);
         IpcBuf *a = in_buf(req, 0);
-        if (f->save)
+        if (f->save && a)
             LOG("[save] write %s off %lld size %lld <- guest %llx\n", f->path, (long long)off, (long long)size, (unsigned long long)a->addr);
         // [XCDE] Quick Step slot (Monado II port): optional per-save metadata staged with the native payload write
         QuickstepSaveWrite plan = {0};
-        if (f->save && (off < 0 || size < 0 || (uint64_t)size > a->size)) { errno = EINVAL; resp->result = errno_result(); break; }
+        if (!a || off < 0 || size < 0 || (uint64_t)size > a->size ||
+            (uint64_t)off > (uint64_t)INT64_MAX - (uint64_t)size) {
+            errno = EINVAL; resp->result = errno_result(); break;
+        }
         if (f->save && quickstep_save_prepare(f->root, f->path, (void *)(uintptr_t)a->addr, off, size, &plan)) {
             resp->result = errno_result(); break;
         }
-        journal_touch(f->journal);
+        if (journal_touch(f->journal)) { resp->result = errno_result(); break; }
         if (plan.tracked && quickstep_save_stage(f->root, &plan)) { resp->result = errno_result(); break; }
-        if (pwrite(f->fd, (void *)(uintptr_t)a->addr, (size_t)size, off) < 0) resp->result = errno_result();
+        if (pwrite_all(f->fd, (const void *)(uintptr_t)a->addr, (size_t)size, off)) resp->result = errno_result();
         else if (f->save) {
             extern void flags_ext_save_written(const char *path, uint64_t addr, int64_t off, int64_t size);
             flags_ext_save_written(f->path, a->addr, off, size);
@@ -486,10 +512,10 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
     }
     case 2:
         if (f->save) LOG("[save] flush %s\n", f->path);
-        fsync(f->fd);
+        if (fsync_retry(f->fd)) resp->result = errno_result();
         break;
     case 3:
-        journal_touch(f->journal);
+        if (journal_touch(f->journal)) { resp->result = errno_result(); break; }
         if (ftruncate(f->fd, IN(int64_t, 0))) resp->result = errno_result();
         break;
     case 4: {
@@ -584,7 +610,7 @@ static pthread_mutex_t g_journal_lock = PTHREAD_MUTEX_INITIALIZER;
 static int copy_tree(const char *from, const char *to) {
     XcdeDir *d = xcde_opendir(from);
     if (!d) return -1;
-    xcde_utf8_mkdir(to);
+    if (xcde_utf8_mkdir(to) && errno != EEXIST) { xcde_closedir(d); return -1; }
     int rc = 0;
     XcdeDirent *e;
     while (!rc && (e = xcde_readdir(d))) {
@@ -597,33 +623,59 @@ static int copy_tree(const char *from, const char *to) {
         if (S_ISDIR(sb.st_mode)) { rc = copy_tree(a, b); continue; }
         int in = xcde_utf8_open(a, O_RDONLY | O_BINARY, 0), out = xcde_utf8_open(b, O_CREAT | O_TRUNC | O_WRONLY | O_BINARY, 0644);
         char buf[65536];
-        ssize_t n;
         if (in < 0 || out < 0) rc = -1;
-        while (!rc && (n = read(in, buf, sizeof buf)) > 0)
-            if (write(out, buf, (size_t)n) != n) rc = -1;
-        if (!rc && fsync(out)) rc = -1;
-        if (in >= 0) close(in);
-        if (out >= 0) close(out);
+        while (!rc) {
+            ssize_t n = read(in, buf, sizeof buf);
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                rc = -1; break;
+            }
+            if (!n) break;
+            const char *p = buf;
+            size_t left = (size_t)n;
+            while (left) {
+                ssize_t w = write(out, p, left);
+                if (w < 0) {
+                    if (errno == EINTR) continue;
+                    rc = -1; break;
+                }
+                if (!w) { errno = EIO; rc = -1; break; }
+                p += w;
+                left -= (size_t)w;
+            }
+        }
+        if (!rc && fsync_retry(out)) rc = -1;
+        if (in >= 0 && close(in) && !rc) rc = -1;
+        if (out >= 0 && close(out) && !rc) rc = -1;
     }
     xcde_closedir(d);
     return rc;
 }
 
-static void fsync_tree(const char *p) {
+// Flush every file in the tree; report the first failure instead of treating an unflushed save as committed.
+static int fsync_tree(const char *p) {
     XcdeDir *d = xcde_opendir(p);
-    if (!d) return;
+    if (!d) return -1;
+    int rc = 0, error = 0;
     XcdeDirent *e;
     while ((e = xcde_readdir(d))) {
         if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
         char c[2048];
         snprintf(c, sizeof c, "%s/%s", p, e->d_name);
         struct stat sb;
-        if (xcde_utf8_stat(c, &sb)) continue;
-        if (S_ISDIR(sb.st_mode)) { fsync_tree(c); continue; }
+        if (xcde_utf8_stat(c, &sb)) { if (!rc) { rc = -1; error = errno; } continue; }
+        if (S_ISDIR(sb.st_mode)) {
+            if (fsync_tree(c) && !rc) { rc = -1; error = errno; }
+            continue;
+        }
         int fd = xcde_utf8_open(c, O_RDWR | O_BINARY, 0);
-        if (fd >= 0) { fsync(fd); close(fd); }
+        if (fd < 0) { if (!rc) { rc = -1; error = errno; } continue; }
+        if (fsync_retry(fd) && !rc) { rc = -1; error = errno; }
+        if (close(fd) && !rc) { rc = -1; error = errno; }
     }
     xcde_closedir(d);
+    if (rc) errno = error ? error : EIO;
+    return rc;
 }
 
 // [XCDE] a copy of the save as the session starts (after any restore): <save dir>/backup/<save_N>_<date>, the newest
@@ -690,11 +742,12 @@ static int journal_mount(const char *root) {
     return j;
 }
 
-// a save file / directory is about to change
-static void journal_touch(int j) {
-    if (j < 0) return;
+// a save file / directory is about to change; without a journal the change is refused (the committed save stays intact)
+static int journal_touch(int j) {
+    if (j < 0) return 0;
     pthread_mutex_lock(&g_journal_lock);
     SaveJournal *sj = &g_journals[j];
+    int rc = 0;
     if (!sj->dirty) {
         char jp[1100], tp[1100];
         snprintf(jp, sizeof jp, "%s.journal", sj->root);
@@ -702,29 +755,45 @@ static void journal_touch(int j) {
         rm_rf(tp, false);
         rm_rf(jp, false);
         if (copy_tree(sj->root, tp) || xcde_utf8_rename(tp, jp)) {
-            LOG("[save] journal of %s could not be written (the save is not protected this time)\n", sj->root);
+            int error = errno ? errno : EIO;
+            LOG("[save] journal of %s could not be written (%s); the save is not changed\n", sj->root, strerror(error));
             rm_rf(tp, false);
+            errno = error;
+            rc = -1;
+        } else {
+            sj->dirty = true;
         }
-        sj->dirty = true;
     }
     pthread_mutex_unlock(&g_journal_lock);
+    return rc;
 }
 
-static void journal_commit(int j) {
-    if (j < 0) return;
+static int journal_commit(int j) {
+    if (j < 0) return 0;
     pthread_mutex_lock(&g_journal_lock);
     SaveJournal *sj = &g_journals[j];
+    int rc = 0;
     if (sj->dirty) {
         char jp[1100];
         snprintf(jp, sizeof jp, "%s.journal", sj->root);
-        if (quickstep_save_flush(sj->root))  // [XCDE] Quick Step metadata becomes final with the native Commit
-            LOG("[save] Quick Step metadata of %s could not be flushed\n", sj->root);
-        fsync_tree(sj->root);
-        rm_rf(jp, false);
-        sj->dirty = false;
-        quickstep_save_committed(sj->root);
+        int error = 0;
+        if (quickstep_save_flush(sj->root)) {  // [XCDE] Quick Step metadata becomes final with the native Commit
+            error = errno ? errno : EIO;
+            LOG("[save] Quick Step metadata of %s could not be flushed (%s)\n", sj->root, strerror(error));
+        }
+        if (fsync_tree(sj->root) && !error) error = errno ? errno : EIO;
+        if (!error && rm_rf(jp, false) && errno != ENOENT) error = errno ? errno : EIO;
+        if (error) {
+            LOG("[save] commit of %s failed (%s); the journal is kept\n", sj->root, strerror(error));
+            errno = error;
+            rc = -1;
+        } else {
+            sj->dirty = false;
+            quickstep_save_committed(sj->root);
+        }
     }
     pthread_mutex_unlock(&g_journal_lock);
+    return rc;
 }
 
 static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
@@ -733,7 +802,9 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
     host_path(fs, in_path(req, 0), p, sizeof p);
     if (fs->save && req->cmd != 7 && req->cmd != 8 && req->cmd != 9)  // (not the lookups)
         LOG("[save] fs cmd %u %s\n", req->cmd, p);
-    if (req->cmd <= 6 || req->cmd == 13) journal_touch(fs->journal);  // (the changes: create, delete, rename, clean)
+    if ((req->cmd <= 6 || req->cmd == 13) && journal_touch(fs->journal)) {  // (the changes: create, delete, rename, clean)
+        resp->result = errno_result(); return;
+    }
     switch (req->cmd) {
     case 0: {  // CreateFile(option, size)
         int fd = xcde_utf8_open(p, O_CREAT | O_EXCL | O_RDWR, 0644);
@@ -794,7 +865,9 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         ipc_return_object(resp, ds_);
         break;
     }
-    case 10: journal_commit(fs->journal); break;  // Commit
+    case 10:  // Commit
+        if (journal_commit(fs->journal)) resp->result = errno_result();
+        break;
     case 11: case 12: OUT(int64_t, 0) = 0x40000000; resp_size(resp, 8); break;
     case 13:
         rm_rf(p, true);

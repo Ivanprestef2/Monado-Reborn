@@ -524,3 +524,13 @@ Review follow-ups on the two commits above (the Windows runtime is still not exe
 - Validation: 258 unit tests, the Linux native suite, focused Clang/GCC signature and sparse-file tests,
   targeted Clang syntax checks for `precompile.c`/`exec.c`, and the Linux launcher syntax check pass. Windows execution is
   still pending; the sparse-file test is included in the Windows validation suite.
+
+## 2026-11-26 — save writes cannot silently tear (T037)
+
+- `runtime/services/fs.c` now validates `IFile.Write` offset/size for every file and keeps writing through short
+  `pwrite()` results (retrying `EINTR`); a zero-length write or any remaining error is reported to the guest. `Flush`
+  reports `fsync()` failures, `fsync_tree()` propagates the first stat/open/flush error, and `Commit` keeps the journal
+  and stays dirty when the flush fails. A journal that cannot be created also refuses the change instead of writing an
+  unprotected save. `copy_tree()` treats read errors and partial writes as failures.
+- Added `tests/native/test_fs_commit.c` (short writes, ENOSPC, failed fsync, journal kept on a failed commit), wired into
+  `scripts/native_tests_linux.sh`, `scripts/native_tests.sh` and the Windows validation suite.
