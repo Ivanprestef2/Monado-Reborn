@@ -1059,7 +1059,12 @@ static void upload_texture_(NvnTexture *t, TexBackend *b) {
         b->first_up_zero = true;
         if (gw) for (uint64_t i = 0; i < total; i += 8) if (*(const uint64_t *)(mem + i)) { b->first_up_zero = false; break; }
     }
-    if (b->uploaded && h != b->data_hash) b->dynamic = true;
+    if (b->uploaded && h != b->data_hash) {
+        // [XCDE] Issue #261: a static texture finishing its initial async stream-in changes 1-2 times;
+        // only promote to dynamic (full CPU hash every frame when write-watch is off) after >=3 changes.
+        if (b->up_changes < 255) b->up_changes++;
+        if (b->up_changes >= 3) b->dynamic = true;
+    }
     b->data_hash = h;
     b->uploaded = true;
     if (b->format != mf.vf && !b->astc_bw) return;  // unsupported format: nothing sensible to copy

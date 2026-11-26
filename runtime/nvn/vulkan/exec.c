@@ -1077,7 +1077,7 @@ static void run_translate(void (*fn)(void *), void *arg) {
     pthread_mutex_unlock(&tjobs_lock);
 }
 
-static void run_job(void (*fn)(void *), void *arg) {
+static void run_job_ex(void (*fn)(void *), void *arg, bool urgent) {
     if (sync_shaders() || tl_inline_jobs) { fn(arg); return; }
     static bool started;
     if (!started) {
@@ -1097,11 +1097,19 @@ static void run_job(void (*fn)(void *), void *arg) {
     j->fn = fn; j->arg = arg; j->next = NULL;
     atomic_fetch_add(&g_jobs_queued, 1);
     pthread_mutex_lock(&jobs_lock);
-    if (jobs_tail) jobs_tail->next = j; else jobs_head = j;
-    jobs_tail = j;
+    if (urgent) {
+        j->next = jobs_head;
+        jobs_head = j;
+        if (!jobs_tail) jobs_tail = j;
+    } else {
+        if (jobs_tail) jobs_tail->next = j; else jobs_head = j;
+        jobs_tail = j;
+    }
     pthread_cond_signal(&jobs_cond);
     pthread_mutex_unlock(&jobs_lock);
 }
+static void run_job(void (*fn)(void *), void *arg) { run_job_ex(fn, arg, false); }
+static void run_job_urgent(void (*fn)(void *), void *arg) { run_job_ex(fn, arg, true); }
 
 // [XCDE] T188: a job the workers take only when the normal queue is empty (nobody waits for it). Queued only from a
 // worker's own job, so the workers exist.
@@ -1263,18 +1271,48 @@ static int amd_igpu_heavy_skip(void) {
     }
     return v;
 }
-static bool pipe_wait_over_budget(void) {
+static uint64_t pipe_wait_budget_ns(void) {
     static int64_t lim_ms = -1;
     if (lim_ms < 0) {
         const char *e = getenv("XCDE_PIPE_WAIT_MS");
-        lim_ms = e ? atoi(e) : 0; // T260: correctness by default; never hide geometry to satisfy a compile budget.
+        // [XCDE] Issue #261: default 2 ms per-frame wait budget for non-critical 3D draws so cold driver compiles
+        // never hitch gameplay; fast GPL links (~0.01-0.3 ms) still finish on the same frame with zero pop-in.
+        // Disabled (0) in deterministic/sync runs; XCDE_PIPE_WAIT_MS=0 restores strict synchronous waiting.
+        lim_ms = e ? atoi(e) : (sync_shaders() || diag_deterministic() ? 0 : 2);
         if (lim_ms < 0) lim_ms = 0;
         if (lim_ms) LOG("[vk] pipeline wait budget: %lld ms per frame (XCDE_PIPE_WAIT_MS=0: off)%c", (long long)lim_ms, 10);
     }
-    if (!lim_ms) return false;
+    return (uint64_t)lim_ms * 1000000ull;
+}
+// [XCDE] Issue #261: budgeted wait for non-critical 3D draws. Fast cache/link hits finish immediately on the same
+// frame; slow cold shader/pipeline compiles stay on the worker threads while the render thread yields at most the
+// remaining frame budget and skips the draw for 1-3 frames instead of hitching.
+static bool wait_ready_budget(_Atomic int *state, uint64_t budget_ns) {
+    static int skip = -1;
+    if (skip < 0) skip = getenv("LARECOMP_ASYNC_SKIP") != NULL;
+    g_last_wait_ns = 0;
+    int s = atomic_load(state);
+    if (s != 0 || skip) return s == 1;
     uint64_t f = renderer_present_count();
     if (f != pb_frame) { pb_frame = f; pb_used_ns = 0; }
-    return pb_used_ns >= (uint64_t)lim_ms * 1000000ull;
+    if (pb_used_ns >= budget_ns) return false;
+    uint64_t t0 = SDL_GetTicksNS();
+    uint64_t rem = budget_ns - pb_used_ns;
+    const char *was = g_rq_where;
+    vk_rq_at("waiting for a shader / pipeline build (budgeted)");
+    while ((s = atomic_load(state)) == 0) {
+        if (pw_npending || pl_npending || lv_npending) prewarm_pump();
+        if (SDL_GetTicksNS() - t0 >= rem) break;
+        sched_yield();
+    }
+    if (tl_rq_worker) g_rq_where = was;
+    uint64_t waited = SDL_GetTicksNS() - t0;
+    g_last_wait_ns = waited;
+    pb_used_ns += waited;
+    stat_build_waits++;
+    stat_build_wait_ns += waited;
+    hc_wait_ns += waited; hc_wait_n++;
+    return s == 1;
 }
 
 // ================================================================== state
@@ -2675,7 +2713,7 @@ static void translate_program(void *arg) {
         }
     }
     if (p->gi) save_glsl(p->gi->msl, p->gcode, "gs");
-    run_job(compile_program, p);
+    run_job_ex(compile_program, p, !p->prewarmed);
 }
 
 // [XCDE] T185: program and pipeline tables (render thread only) grow. Fixed at 4096 / 8192 entries with a probe loop that
@@ -3691,7 +3729,7 @@ static void build_pipeline_(void *arg) {
     if (g_vk.gpl && (!sync_shaders() || det_gpl)) {
         // a whole pipeline the disk cache already holds: no compile
         // [XCDE] T211: link first when the shader libraries are already in memory (~0.3 ms; a whole pipeline from the
-        // driver cache took 2-17 ms): the optimized one replaces it from the low-priority queue as for any link
+        // driver cache took 2-21 ms on NVIDIA Windows): the optimized one replaces it from the low-priority queue as for any link
         bool libs_ready = !det_gpl && (link_first() || (gpl_ready(gpl_key_pre(&pp->k)) && (!pp->k.prog->fs || gpl_ready(gpl_key_fs(&pp->k)))));
         // [XCDE] T240: a prewarmed pipeline (an area's / a scene's recorded variant, built on its loading screen) is
         // taken whole from the driver's cache when the precompilation put it there (precompile.c builds every recorded
@@ -4237,7 +4275,7 @@ void vk_prewarm_hold(uint64_t frame_draws) {
         reg_forced = e != NULL;
         reg_min = e ? atoi(e) : 16;
         e = getenv("XCDE_REG_HOLD_MS");
-        reg_ms = e ? atoi(e) : 500;
+        reg_ms = e ? atoi(e) : 0;
     }
     extern bool xcde_in_cutscene(void);
     int burst = atomic_exchange(&g_reg_burst, 0);
@@ -4358,6 +4396,13 @@ int vk_precompile_variant(const NvnProgram *np, const void *rec, size_t rec_size
             }
             PipeKey kc = k;
             pipe_key_canon(&kc);
+            if (pass == 0 && g_vk.gpl && (kc.a2c != 0 || kc.samples != 1 || kc.poly_fill != 1)) {
+                // [XCDE] Issue #261: vk_precompile_program only warms {poly_fill=1, samples=1, a2c=0};
+                // warm non-default GPL shader libraries (e.g. a2c water/foliage/ability effects) here too.
+                VkPipeline la = VK_NULL_HANDLE, lb = VK_NULL_HANDLE;
+                if (kc.poly_fill != 1 && gpl_pre(&kc, &la) == VK_SUCCESS && la) vkDestroyPipeline(g_vk.dev, la, NULL);
+                if ((kc.a2c != 0 || kc.samples != 1) && p->fs && gpl_fs(&kc, &lb) == VK_SUCCESS && lb) vkDestroyPipeline(g_vk.dev, lb, NULL);
+            }
             VkPipeline pipe = VK_NULL_HANDLE;
             ok = pipeline_whole(&kc, 0, &pipe) == VK_SUCCESS;
             if (pipe) vkDestroyPipeline(g_vk.dev, pipe, NULL);
@@ -6542,7 +6587,7 @@ static CsProg *compute_program(NvnProgram *np) {
         if (!cp->local[i]) cp->local[i] = 1;
     }
     save_glsl(cp->si->msl, ss->code_addr, "cs");
-    run_job(build_compute, cp);
+    run_job_urgent(build_compute, cp);
     return cp;
 }
 
@@ -7204,8 +7249,18 @@ static void draw_(CmdRec *r, bool indexed) {
                 xfb = xfb_key(&vkey);
             }
         }
+        // [XCDE] Issue #261: keep UI/HUD/swapchain, fullscreen post-process quads, and XFB draws synchronous so
+        // async draw skipping never causes black flashes, missing HUD, or broken post-processing.
+        bool critical_prog = (st.rt.ncolor && st.rt.color[0] && renderer_texture_presented(st.rt.color[0])) || xfb != 0;
+        if (!critical_prog && st.rt.ncolor && st.rt.color[0]) {
+            uint32_t d_inst = (uint32_t)(indexed ? r->x[6] : r->x[4]);
+            if (d_inst <= 1 && r->x[2] <= 6 && st.viewport[0][0] == 0 && st.viewport[0][1] == 0 &&
+                st.viewport[0][2] >= st.rt.color[0]->width && st.viewport[0][3] >= st.rt.color[0]->height)
+                critical_prog = true;
+        }
         pr = get_program(st.program, &vkey, &fkey);
-        pr_ok = pr && wait_ready(&pr->state, pr);
+        uint64_t prog_budget = critical_prog ? 0 : pipe_wait_budget_ns();
+        pr_ok = pr && (prog_budget ? wait_ready_budget(&pr->state, prog_budget) : wait_ready(&pr->state, pr));
         if (pr && g_last_wait_ns > build_wait_min()) build_wait_log(pr, NULL, g_last_wait_ns);
         if (pr_ok && !xfb) {
             l_np = st.program; l_pr = pr; l_vkey = vkey; l_fkey = fkey;
@@ -7771,7 +7826,7 @@ static void draw_(CmdRec *r, bool indexed) {
             pslot->key = ph;
             pslot->val = pp;
             atomic_fetch_add(&pp->jobs, 1);
-            run_job(build_pipeline, pp);
+            run_job_urgent(build_pipeline, pp);
             var_record(st.program, &vkey, &fkey, &k);  // [XCDE] T163
             if (dump_fs_want() && dump_fs_want() == g_cur_fs_hash) attr_layout_log(&k, dump_fs_want());
         }
@@ -7779,11 +7834,19 @@ static void draw_(CmdRec *r, bool indexed) {
             pp->how &= 0x80;
             atomic_store(&pp->state, 0);
             atomic_fetch_add(&pp->jobs, 1);
-            run_job(build_pipeline, pp);
+            run_job_urgent(build_pipeline, pp);
             stat_pipe_rebuilt++;
         }
         pp->last_used = renderer_present_count();
-        if (atomic_load(&pp->state) == 0 && pipe_wait_over_budget()) { pp_ok = false; g_last_wait_ns = 0; }  // [PIPE-BUDGET] (still building: skipped this frame)
+        bool critical_pipe = (st.rt.ncolor && st.rt.color[0] && renderer_texture_presented(st.rt.color[0])) || xfb != 0;
+        if (!critical_pipe && st.rt.ncolor && st.rt.color[0]) {
+            uint32_t d_inst = (uint32_t)(indexed ? r->x[6] : r->x[4]);
+            if (d_inst <= 1 && r->x[2] <= 6 && st.viewport[0][0] == 0 && st.viewport[0][1] == 0 &&
+                st.viewport[0][2] >= st.rt.color[0]->width && st.viewport[0][3] >= st.rt.color[0]->height)
+                critical_pipe = true;
+        }
+        uint64_t pipe_budget = critical_pipe ? 0 : pipe_wait_budget_ns();
+        if (pipe_budget) pp_ok = wait_ready_budget(&pp->state, pipe_budget);
         else { pp_ok = wait_ready(&pp->state, pp); pb_used_ns += g_last_wait_ns; }
         if (g_last_wait_ns > build_wait_min()) build_wait_log(NULL, pp, g_last_wait_ns);
         if ((pp->how & 0x40) && gpl_optimize_on()) { pp->how &= ~0x40; atomic_fetch_add(&pp->jobs, 1); run_job_low(gpl_optimize, pp); }  // [XCDE] T218: a prelinked pipeline's first draw
