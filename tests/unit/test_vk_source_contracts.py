@@ -146,6 +146,22 @@ class VulkanSourceContracts(unittest.TestCase):
         self.assertIn("VK_IMAGE_USAGE_TRANSFER_SRC_BIT", temporal)
         self.assertIn("FFX_API_DISPATCH_DESC_TYPE_FGSWAPCHAIN_WAIT_FOR_PRESENTS_VK", temporal)
 
+    def test_char_light_patch_survives_structured_cfg(self):
+        """GitHub #58 / #268: try_emit_structured() removes `switch (pc)` / `case 5400u:` labels.
+
+        char_light_src() must anchor on the emitted epilogue instruction (inserting before it) so the
+        local-light scaling applies in structured CFG, switch CFG, and annotated dumps alike.
+        """
+        exec_c = (ROOT / "runtime/nvn/vulkan/exec.c").read_text(encoding="utf-8")
+        start = exec_c.index("static const char *char_light_src(")
+        end = exec_c.index("static const char *tmaa_texel_src(", start)
+        fn = exec_c[start:end]
+        code = "\n".join(line.split("//")[0] for line in fn.splitlines())
+        self.assertNotIn("case 5400u:", code)
+        self.assertIn('static const char anchor[] = "    r2 = as_u((as_f(r40) * as_f(cb3[13][0])));\\n";', code)
+        self.assertNotIn("at += sizeof anchor - 1;", code)
+        self.assertIn("r41 = as_u(as_f(r41) * %sf);", code)
+
 
 if __name__ == "__main__":
     unittest.main()
