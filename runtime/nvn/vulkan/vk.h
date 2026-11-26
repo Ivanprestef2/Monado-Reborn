@@ -140,6 +140,7 @@ typedef struct TexBackend {
     bool storage_failed;  // [XCDE] T192: vk_tex_add_storage could not give it (don't retry every draw)
     bool has_feedback;    // [XCDE] lazy VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT (preserves DCC on non-feedback RTs)
     bool feedback_failed;
+    uint8_t up_changes;   // [XCDE] Issue #261: content changes after initial upload (3+ promotes to dynamic)
 } TexBackend;
 
 TexBackend *vk_tex(NvnTexture *t, bool for_render);  // backend image (uploads CPU contents unless for_render)

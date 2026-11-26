@@ -1077,7 +1077,7 @@ static void run_translate(void (*fn)(void *), void *arg) {
     pthread_mutex_unlock(&tjobs_lock);
 }
 
-static void run_job(void (*fn)(void *), void *arg) {
+static void run_job_ex(void (*fn)(void *), void *arg, bool urgent) {
     if (sync_shaders() || tl_inline_jobs) { fn(arg); return; }
     static bool started;
     if (!started) {
@@ -1097,11 +1097,19 @@ static void run_job(void (*fn)(void *), void *arg) {
     j->fn = fn; j->arg = arg; j->next = NULL;
     atomic_fetch_add(&g_jobs_queued, 1);
     pthread_mutex_lock(&jobs_lock);
-    if (jobs_tail) jobs_tail->next = j; else jobs_head = j;
-    jobs_tail = j;
+    if (urgent) {
+        j->next = jobs_head;
+        jobs_head = j;
+        if (!jobs_tail) jobs_tail = j;
+    } else {
+        if (jobs_tail) jobs_tail->next = j; else jobs_head = j;
+        jobs_tail = j;
+    }
     pthread_cond_signal(&jobs_cond);
     pthread_mutex_unlock(&jobs_lock);
 }
+static void run_job(void (*fn)(void *), void *arg) { run_job_ex(fn, arg, false); }
+static void run_job_urgent(void (*fn)(void *), void *arg) { run_job_ex(fn, arg, true); }
 
 // [XCDE] T188: a job the workers take only when the normal queue is empty (nobody waits for it). Queued only from a
 // worker's own job, so the workers exist.
@@ -2672,7 +2680,7 @@ static void translate_program(void *arg) {
         }
     }
     if (p->gi) save_glsl(p->gi->msl, p->gcode, "gs");
-    run_job(compile_program, p);
+    run_job_ex(compile_program, p, !p->prewarmed);
 }
 
 // [XCDE] T185: program and pipeline tables (render thread only) grow. Fixed at 4096 / 8192 entries with a probe loop that
@@ -3687,9 +3695,13 @@ static void build_pipeline_(void *arg) {
     tl_libs_new = 0;
     if (g_vk.gpl && (!sync_shaders() || det_gpl)) {
         // a whole pipeline the disk cache already holds: no compile
-        // [XCDE] T211: link first when the shader libraries are already in memory (~0.3 ms; a whole pipeline from the
-        // driver cache took 2-17 ms): the optimized one replaces it from the low-priority queue as for any link
-        bool libs_ready = !det_gpl && (link_first() || (gpl_ready(gpl_key_pre(&pp->k)) && (!pp->k.prog->fs || gpl_ready(gpl_key_fs(&pp->k)))));
+        // [XCDE] T211 / Issue #261: link first when the shader libraries are ALREADY in memory (~0.02-0.3 ms).
+        // When the libraries are NOT in memory yet and pipelineCreationCacheControl is supported, check the
+        // pipeline/driver cache first with FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT: a precompiled or previously
+        // cached whole pipeline hits in <0.5 ms (avoiding 22-113 ms on-the-fly gpl_pre/gpl_fs compiles +
+        // background gpl_optimize), while a miss returns immediately in microseconds and falls back to gpl_link.
+        bool actual_libs_ready = gpl_ready(gpl_key_pre(&pp->k)) && (!pp->k.prog->fs || gpl_ready(gpl_key_fs(&pp->k)));
+        bool libs_ready = !det_gpl && (actual_libs_ready || (!g_vk.pipeline_cache_control && link_first()));
         // [XCDE] T240: a prewarmed pipeline (an area's / a scene's recorded variant, built on its loading screen) is
         // taken whole from the driver's cache when the precompilation put it there (precompile.c builds every recorded
         // variant's optimized pipeline): the scene starts with its final pipelines instead of fast links that a
@@ -4234,7 +4246,7 @@ void vk_prewarm_hold(uint64_t frame_draws) {
         reg_forced = e != NULL;
         reg_min = e ? atoi(e) : 16;
         e = getenv("XCDE_REG_HOLD_MS");
-        reg_ms = e ? atoi(e) : 500;
+        reg_ms = e ? atoi(e) : 0;
     }
     extern bool xcde_in_cutscene(void);
     int burst = atomic_exchange(&g_reg_burst, 0);
@@ -4355,6 +4367,13 @@ int vk_precompile_variant(const NvnProgram *np, const void *rec, size_t rec_size
             }
             PipeKey kc = k;
             pipe_key_canon(&kc);
+            if (pass == 0 && g_vk.gpl && (kc.a2c != 0 || kc.samples != 1 || kc.poly_fill != 1)) {
+                // [XCDE] Issue #261: vk_precompile_program only warms {poly_fill=1, samples=1, a2c=0};
+                // warm non-default GPL shader libraries (e.g. a2c water/foliage/ability effects) here too.
+                VkPipeline la = VK_NULL_HANDLE, lb = VK_NULL_HANDLE;
+                if (kc.poly_fill != 1 && gpl_pre(&kc, &la) == VK_SUCCESS && la) vkDestroyPipeline(g_vk.dev, la, NULL);
+                if ((kc.a2c != 0 || kc.samples != 1) && p->fs && gpl_fs(&kc, &lb) == VK_SUCCESS && lb) vkDestroyPipeline(g_vk.dev, lb, NULL);
+            }
             VkPipeline pipe = VK_NULL_HANDLE;
             ok = pipeline_whole(&kc, 0, &pipe) == VK_SUCCESS;
             if (pipe) vkDestroyPipeline(g_vk.dev, pipe, NULL);
@@ -6539,7 +6558,7 @@ static CsProg *compute_program(NvnProgram *np) {
         if (!cp->local[i]) cp->local[i] = 1;
     }
     save_glsl(cp->si->msl, ss->code_addr, "cs");
-    run_job(build_compute, cp);
+    run_job_urgent(build_compute, cp);
     return cp;
 }
 
@@ -7768,7 +7787,7 @@ static void draw_(CmdRec *r, bool indexed) {
             pslot->key = ph;
             pslot->val = pp;
             atomic_fetch_add(&pp->jobs, 1);
-            run_job(build_pipeline, pp);
+            run_job_urgent(build_pipeline, pp);
             var_record(st.program, &vkey, &fkey, &k);  // [XCDE] T163
             if (dump_fs_want() && dump_fs_want() == g_cur_fs_hash) attr_layout_log(&k, dump_fs_want());
         }
@@ -7776,7 +7795,7 @@ static void draw_(CmdRec *r, bool indexed) {
             pp->how &= 0x80;
             atomic_store(&pp->state, 0);
             atomic_fetch_add(&pp->jobs, 1);
-            run_job(build_pipeline, pp);
+            run_job_urgent(build_pipeline, pp);
             stat_pipe_rebuilt++;
         }
         pp->last_used = renderer_present_count();
