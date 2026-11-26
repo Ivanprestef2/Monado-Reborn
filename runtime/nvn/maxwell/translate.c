@@ -26,6 +26,7 @@
 
 // [XCDE] T281: per-thread, so precompile workers can translate concurrently (exec.c sets them right before the call).
 _Thread_local uint64_t maxwell_gmem_base, maxwell_gmem_size;
+bool maxwell_native_fp16 = false;
 const uint8_t *maxwell_dbg_code;
 uint32_t maxwell_dbg_pc;
 int maxwell_dbg_reg;
@@ -80,6 +81,8 @@ typedef struct {
     int ipa_mul;   // its multiplier register (mode 1: the result is the "pass" value attr/w times this register)
     // GLSL (fields kept last: the MSL path's layout, including its out-of-range reg_used writes, is unchanged)
     bool glsl;               // emit Vulkan GLSL: dialect-specific constructs here, the rest via glsl_rewrite()
+    bool native_fp16;        // [XCDE] emit GL_EXT_shader_explicit_arithmetic_types_float16 f16vec2 in FS/CS
+    bool uses_half;          // [XCDE] shader emitted SM53 half-float ALU ops (emit_half)
     bool uses_gmem_store;    // STG present: the gmem buffer is not readonly
     uint32_t cbuf_need[18];  // highest constant vec4 index + 1 per cbuf (array size of the GLSL block)
     // [XCDE] geometry stage (GLSL): SPH output topology (1 points, 6 line strip, 7 triangle strip) and vertex count,
@@ -478,6 +481,7 @@ static bool emit_half(Ctx *c, uint64_t w) {
                 sprintf(ib, "0x%08xu", himm(w)); bv = ib;
             }
         }
+        c->uses_half = true;
         sprintf(t, kind == 0 ? "(%s + %s)" : "(%s * %s)", HS(R(a), swa, nega, absa), HS(bv, swb, negb, absb));
         hstore(c, d, t, merge, sat);
         return true;
@@ -521,19 +525,22 @@ static bool emit_half(Ctx *c, uint64_t w) {
             sprintf(ib, "0x%08xu", (uint32_t)bits(w, 20, 32)); bv = ib; cv = R(d);
             break;
         }
+        c->uses_half = true;
         sprintf(t, "fma(%s, %s, %s)", HS(R(a), swa, false, false), HS(bv, swb, negb, false), HS(cv, swc, negc, false));
         hstore(c, d, t, merge, sat);
         return true;
     }
     // ---- HSETP2 / HSET2 (reg forms)
     if ((op & 0xfff8) == 0x5d20 || (op & 0xfff8) == 0x5d18) {
+        c->uses_half = true;
         bool setp = (op & 0xfff8) == 0x5d20;
         const char *x = HS(R(a), (int)bits(w, 47, 2), bits(w, 43, 1), bits(w, 44, 1));
         const char *y = HS(R((int)bits(w, 20, 8)), (int)bits(w, 28, 2), bits(w, 31, 1), bits(w, 30, 1));
         int cop = (int)bits(w, 35, 4), bop = (int)bits(w, 45, 2);
         const char *pp = P((int)bits(w, 39, 3), bits(w, 42, 1));
         char lx[512], ly[512];
-        sp(&c->body, "    { float2 hx_ = %s, hy_ = %s; bool pp = %s;\n", x, y, pp);
+        sp(&c->body, "    { %s hx_ = %s, hy_ = %s; bool pp = %s;\n",
+           c->native_fp16 ? "f16vec2" : "float2", x, y, pp);
         fcmp_expr(lx, cop, "hx_.x", "hy_.x");
         fcmp_expr(ly, cop, "hx_.y", "hy_.y");
         sp(&c->body, "      bool l = %s, h = %s;\n", lx, ly);
@@ -2289,6 +2296,15 @@ static const char glsl_fp16_hw[] =
     "vec2 hx(uint v, uint swz) { if (swz == 1u) return vec2(uintBitsToFloat(v)); vec2 h = unpackHalf2x16(v); return swz == 2u ? h.xx : (swz == 3u ? h.yy : h); }\n"
     "uint hpack(vec2 r, uint merge, uint old) { if (merge == 1u) return floatBitsToUint(r.x); uint p = packHalf2x16(r); if (merge == 2u) return (old & 0xFFFF0000u) | (p & 0xFFFFu); if (merge == 3u) return (old & 0xFFFFu) | (p & 0xFFFF0000u); return p; }\n";
 
+// [XCDE] Native packed FP16 arithmetic for FS/CS when the Vulkan device enables shaderFloat16 (and the shader uses
+// SM53 half-float ALU ops). Cuts ALU ops and VGPR pressure on RDNA/Turing+/Arc while keeping VS/GS on glsl_fp16_sw.
+static const char glsl_fp16_native[] =
+    "float h2f(uint h) { return unpackHalf2x16(h).x; }\n"
+    "vec2 unpack_h2(uint v) { return unpackHalf2x16(v); }\n"
+    "f16vec2 saturate(f16vec2 x) { return f16vec2(isnan(x.x) ? float16_t(0.0) : clamp(x.x, float16_t(0.0), float16_t(1.0)), isnan(x.y) ? float16_t(0.0) : clamp(x.y, float16_t(0.0), float16_t(1.0))); }\n"
+    "f16vec2 hx(uint v, uint swz) { if (swz == 1u) return f16vec2(uintBitsToFloat(v)); f16vec2 h = f16vec2(unpackHalf2x16(v)); return swz == 2u ? h.xx : (swz == 3u ? h.yy : h); }\n"
+    "uint hpack(f16vec2 r, uint merge, uint old) { if (merge == 1u) return floatBitsToUint(float(r.x)); uint p = packHalf2x16(vec2(r)); if (merge == 2u) return (old & 0xFFFF0000u) | (p & 0xFFFFu); if (merge == 3u) return (old & 0xFFFFu) | (p & 0xFFFF0000u); return p; }\n";
+
 static const char *glsl_sampler_type(const ShaderTexture *t) {
     static const char *const names[][2] = {
         {"sampler1D", "sampler1DShadow"}, {"sampler2D", "sampler2DShadow"}, {"sampler3D", "sampler3D"},
@@ -2320,19 +2336,23 @@ static ShaderInfo *glsl_finish(Ctx *c, int flow_mode, bool dbg) {
     bool xfb = stage == STAGE_VERTEX && key && key->xfb_n;  // [XCDE] T134: transform feedback: stores to the heap
     if (xfb) { info->uses_gmem = true; c->uses_gmem_store = true; info->uses_gmem_store = true; }
     Str s = {0};
-    {   // [XCDE] imageLoad on a format-less image needs GL_EXT_shader_image_load_formatted: after #version, before the rest
+    {   // [XCDE] optional extensions emitted right after #version, before the rest of glsl_prelude
         bool any_image = false;
         for (int i = 0; i < info->ntex; i++) any_image |= info->tex[i].is_image;
+        bool use_native_fp16 = c->native_fp16 && c->uses_half;
         const char *nl = strchr(glsl_prelude, 10);
-        if (any_image && nl) {
-            sp(&s, "%.*s\n#extension GL_EXT_shader_image_load_formatted : require\n%s", (int)(nl - glsl_prelude), glsl_prelude, nl + 1);
+        if ((any_image || use_native_fp16) && nl) {
+            sp(&s, "%.*s\n", (int)(nl - glsl_prelude), glsl_prelude);
+            if (any_image) sp(&s, "#extension GL_EXT_shader_image_load_formatted : require\n");
+            if (use_native_fp16) sp(&s, "#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require\n");
+            sp(&s, "%s", nl + 1);
         } else {
             sp(&s, "%s", glsl_prelude);
         }
         static _Thread_local int hw_fp16 = -1;
         if (hw_fp16 < 0) { const char *e = getenv("XCDE_HW_FP16"); hw_fp16 = !(e && atoi(e) == 0); }
         bool use_hw_fp16 = hw_fp16 && (stage == STAGE_FRAGMENT || stage == STAGE_COMPUTE);
-        sp(&s, "%s", use_hw_fp16 ? glsl_fp16_hw : glsl_fp16_sw);
+        sp(&s, "%s", use_native_fp16 ? glsl_fp16_native : use_hw_fp16 ? glsl_fp16_hw : glsl_fp16_sw);
     }
     for (int i = 0; i < 18; i++) {
         if (!(info->cbuf_mask & (1u << i))) continue;
@@ -2575,6 +2595,16 @@ static size_t struct_find_loop_end(const FlowInfo *f, size_t i, size_t stop) {
     return b_max ? next_inst(b_max) : 0;
 }
 
+// [XCDE] True if [start, stop) has a reachable jump to `target` that needs a `break;` out of a do-while(false) wrapper
+// (either guarded, or unconditional with live instructions remaining before `target`).
+static bool struct_needs_break(const FlowInfo *f, size_t start, size_t stop, size_t target) {
+    for (size_t k = start; k < stop; k++) {
+        if (k % 4 == 0 || !f[k].reachable || f[k].kind != FLOW_JUMP || f[k].target != target) continue;
+        if (f[k].guarded || !struct_range_dead(f, next_inst(k), target)) return true;
+    }
+    return false;
+}
+
 static bool struct_check_range(const FlowInfo *f, size_t end, size_t start, size_t stop,
                                size_t loop_head, size_t loop_exit, int depth) {
     if (depth > 64) return false;
@@ -2626,12 +2656,18 @@ static bool struct_check_range(const FlowInfo *f, size_t end, size_t start, size
             for (size_t k = then_start; k < last_then; k++) {
                 if (k % 4 != 0 && f[k].reachable && f[k].kind == FLOW_JUMP && f[k].target == t) return false;
             }
-            if (!struct_check_range(f, end, then_start, last_then, loop_head, loop_exit, depth + 1)) return false;
-            if (!struct_check_range(f, end, t, merge, loop_head, loop_exit, depth + 1)) return false;
+            bool wrap = merge != loop_exit &&
+                        (struct_needs_break(f, then_start, last_then, merge) ||
+                         struct_needs_break(f, t, merge, merge));
+            size_t lh = wrap ? 0 : loop_head, le = wrap ? merge : loop_exit;
+            if (!struct_check_range(f, end, then_start, last_then, lh, le, depth + 1)) return false;
+            if (!struct_check_range(f, end, t, merge, lh, le, depth + 1)) return false;
             i = merge;
             continue;
         }
-        if (!struct_check_range(f, end, then_start, t, loop_head, loop_exit, depth + 1)) return false;
+        bool wrap = t != loop_exit && struct_needs_break(f, then_start, t, t);
+        size_t lh = wrap ? 0 : loop_head, le = wrap ? t : loop_exit;
+        if (!struct_check_range(f, end, then_start, t, lh, le, depth + 1)) return false;
         i = t;
     }
     return true;
@@ -2716,16 +2752,26 @@ static void struct_emit_range(Ctx *c, const FlowInfo *f, const uint64_t *code, s
         if (last_then && t < stop && f[last_then].kind == FLOW_JUMP && !f[last_then].guarded &&
             f[last_then].target > t && f[last_then].target <= stop) {
             size_t merge = f[last_then].target;
+            bool wrap = merge != loop_exit &&
+                        (struct_needs_break(f, then_start, last_then, merge) ||
+                         struct_needs_break(f, t, merge, merge));
+            size_t lh = wrap ? 0 : loop_head, le = wrap ? merge : loop_exit;
+            if (wrap) sp(&c->body, "  do {\n");
             sp(&c->body, "  if (%s) {\n", skip_false);
-            struct_emit_range(c, f, code, end, then_start, last_then, loop_head, loop_exit, dbg, blob, annotate);
+            struct_emit_range(c, f, code, end, then_start, last_then, lh, le, dbg, blob, annotate);
             sp(&c->body, "  } else {\n");
-            struct_emit_range(c, f, code, end, t, merge, loop_head, loop_exit, dbg, blob, annotate);
+            struct_emit_range(c, f, code, end, t, merge, lh, le, dbg, blob, annotate);
             sp(&c->body, "  }\n");
+            if (wrap) sp(&c->body, "  } while (false);\n  if (exit_now) break;\n");
             i = merge;
             continue;
         }
+        bool wrap = t != loop_exit && struct_needs_break(f, then_start, t, t);
+        size_t lh = wrap ? 0 : loop_head, le = wrap ? t : loop_exit;
         sp(&c->body, "  if (%s) {\n", skip_false);
-        struct_emit_range(c, f, code, end, then_start, t, loop_head, loop_exit, dbg, blob, annotate);
+        if (wrap) sp(&c->body, "  do {\n");
+        struct_emit_range(c, f, code, end, then_start, t, lh, le, dbg, blob, annotate);
+        if (wrap) sp(&c->body, "  } while (false);\n  if (exit_now) break;\n");
         sp(&c->body, "  }\n");
         i = t;
     }
@@ -2824,6 +2870,13 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     c->stage = stage;
     c->ipa_mode = -1;
     c->glsl = key && key->glsl;
+    {
+        const char *hw_e = getenv("XCDE_HW_FP16");
+        bool hw_ok = !(hw_e && atoi(hw_e) == 0);
+        const char *nf_e = getenv("XCDE_NATIVE_FP16");
+        bool nf_ok = nf_e ? atoi(nf_e) != 0 : maxwell_native_fp16;
+        c->native_fp16 = c->glsl && hw_ok && nf_ok && (stage == STAGE_FRAGMENT || stage == STAGE_COMPUTE);
+    }
     if (!blob || max_size < (stage == STAGE_COMPUTE ? 8u : 0x88u)) {  // [XCDE] #102: no code (callers check info->msl)
         snprintf(info->error, sizeof info->error, "no shader code (blob %p, size %zu)", (const void *)blob, max_size);
         free(c);
