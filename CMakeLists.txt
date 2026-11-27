@@ -228,19 +228,7 @@ if(WIN32)
   set(LAUNCHER_LIBS "${MSYS2_PREFIX}/lib/libSDL3.dll.a" "${MSYS2_PREFIX}/lib/libvulkan-1.dll.a")
   set(LAUNCHER_LINK_OPTIONS ${MARCH} -Wl,--subsystem,windows -static-libstdc++)
 
-  # scripts/build_fsr4_windows.sh: the optional native FSR 4 Lite component, loaded at run time beside xcde.exe
-  add_library(monado_fsr4 SHARED third_party/fsr4_native/fsr411.cpp third_party/fsr4_native/monado_adapter.cpp)
-  set_target_properties(monado_fsr4 PROPERTIES OUTPUT_NAME monado_fsr4 PREFIX "" RUNTIME_OUTPUT_DIRECTORY "${OUT}"
-                        LIBRARY_OUTPUT_DIRECTORY "${OUT}")
-  target_compile_options(monado_fsr4 PRIVATE -O2 ${MARCH} -std=c++20 -fvisibility=hidden -w
-                         "SHELL:-idirafter \"${MSYS2_PREFIX}/include\"")
-  target_include_directories(monado_fsr4 PRIVATE runtime/nvn/vulkan)
-  target_link_libraries(monado_fsr4 PRIVATE "${MSYS2_PREFIX}/lib/libvulkan-1.dll.a")
-  # the prepared model files (tools/package/fsr4_prepare.py) go where the runtime looks: build/fsr4/lite
-  if(EXISTS "${ROOT}/build/fsr4/assets/lite")
-    add_custom_command(TARGET monado_fsr4 POST_BUILD
-      COMMAND "${CMAKE_COMMAND}" -E copy_directory "${ROOT}/build/fsr4/assets/lite" "${ROOT}/build/fsr4/lite" VERBATIM)
-  endif()
+  # Windows FSR 4.1.2 uses AMD's signed amd_fidelityfx_upscaler_vk.dll (FidelityFX SDK 2.4.0, scripts/build_fsr4_windows.sh).
 else()
   # =========================== Linux (pkg-config libraries; system clang, or zig cc) ===========================
   set(OUT "${ROOT}/build/linux")
@@ -317,9 +305,8 @@ else()
   if(MONADO_NATIVE_FSR)
     add_custom_target(native_fsr ALL
       COMMAND bash -c "scripts/build_fsr3_linux.sh || echo 'warning: native FSR 3 not built (see third_party/fsr3_native/README.md)' >&2"
-      COMMAND bash -c "scripts/build_fsr4_linux.sh || echo 'warning: native FSR 4 Lite not built (see third_party/fsr4_native/README.md)' >&2"
+      COMMAND bash -c "scripts/build_fsr4_linux.sh || echo 'warning: native FSR 4 (fsr4up-vk) not built (needs git, cmake, python3)' >&2"
       COMMAND bash -c "scripts/build_dlss_linux.sh || echo 'warning: native Linux DLSS not built (run python3 tools/package/setup_linux_dlss.py)' >&2"
-      COMMAND bash -c "[[ ! -d build/fsr4/assets/lite || -e build/linux/fsr4 ]] || ln -s ../fsr4/assets build/linux/fsr4"
       WORKING_DIRECTORY "${ROOT}" USES_TERMINAL VERBATIM)
   endif()
 endif()

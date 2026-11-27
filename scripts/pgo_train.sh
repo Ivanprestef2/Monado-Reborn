@@ -7,8 +7,8 @@ repo=$(cd "$(dirname "$0")/.." && pwd)
 data=${1:-${XDG_DATA_HOME:-$HOME/.local/share}/monado}
 exe=$repo/build/pgo/gen/monado
 [[ -x $exe ]] || { echo "no instrumented build at $exe (docs/guides/PGO.md, step 1)" >&2; exit 1; }
-# the native FSR 3 / FSR 4 Lite components load from beside the executable: borrow the normal build's
-for lib in libmonado_fsr3.so libmonado_fsr4.so; do
+# the native FSR 3 / FSR 4 components load from beside the executable: borrow the normal build's
+for lib in libmonado_fsr3.so amd_fidelityfx_upscaler_vk.so; do
   [[ -e $repo/build/pgo/gen/$lib || ! -e $repo/build/linux/$lib ]] || ln -s ../../linux/$lib "$repo/build/pgo/gen/$lib"
 done
 [[ -f $data/xcde.ini ]] || echo "warning: no xcde.ini in $data: default settings" >&2
