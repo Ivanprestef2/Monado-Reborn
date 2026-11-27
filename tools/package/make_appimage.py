@@ -13,8 +13,6 @@ tools/gamebuild/gamebuild_stage.py + tools/gamebuild/freeze_gamebuild.py). The p
 Needs appimagetool (https://github.com/AppImage/appimagetool) on PATH or given with --appimagetool.
 """
 import argparse
-import hashlib
-import json
 import os
 from pathlib import Path
 import re
@@ -66,13 +64,10 @@ def dependencies(binary):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--build', type=Path, default=ROOT / 'build/linux', help='scripts/build_linux.sh output')
-    ap.add_argument('--fsr4-assets', type=Path, default=ROOT / 'build/fsr4/assets', help='prepared FSR 4 Lite assets')
     ap.add_argument('--output', type=Path, default=ROOT / 'build/Monado-x86_64.AppImage')
     ap.add_argument('--appimagetool', default='appimagetool')
     ap.add_argument('--release', action='store_true', help='runtime without game code + the first-start builder')
     ap.add_argument('--gamebuild', type=Path, default=ROOT / 'build/gamebuild', help='staged builder (--release)')
-    ap.add_argument('--fsr4prep', type=Path, default=ROOT / 'build/fsr4prep',
-                    help='FSR 4 Lite preparation tool (tools/build/build_fsr4prep.py): ships FSR 4 without AMD-derived files')
     a = ap.parse_args()
     build, output = a.build.resolve(), a.output.resolve()
     for name in ('monado', 'monado-launcher'):
@@ -100,7 +95,7 @@ def main():
         for name in ('monado', 'monado-launcher'):
             shutil.copy2(build / name, bin_ / name)
             payloads.append(build / name)
-        fsr3, fsr4 = build / 'libmonado_fsr3.so', build / 'libmonado_fsr4.so'
+        fsr3, fsr4 = build / 'libmonado_fsr3.so', build / 'amd_fidelityfx_upscaler_vk.so'
         if fsr3.is_file():
             shutil.copy2(fsr3, lib / fsr3.name)
             payloads.append(fsr3)
@@ -120,40 +115,14 @@ def main():
             shutil.copy2(dlss_ngx, share / 'dlss' / dlss_ngx.name)
             if (build / 'dlss-LICENSE.txt').is_file():
                 shutil.copy2(build / 'dlss-LICENSE.txt', docs / 'dlss-LICENSE.txt')
-        assets = a.fsr4_assets.resolve()
-        if fsr4.is_file() and (assets / 'provenance.json').is_file():
-            manifest = json.loads((assets / 'provenance.json').read_text())
-            if manifest.get('model') != 'ffxProvider_FSR4Lite_Int8' or manifest.get('sdk', {}).get('version') != '2.4.0':
-                raise RuntimeError('expected verified SDK 2.4.0 Lite INT8 assets')
-            for name, digest in manifest['files'].items():  # (only verified files, never strays beside them)
-                source = (assets / name).resolve()
-                if not source.is_relative_to(assets) or hashlib.sha256(source.read_bytes()).hexdigest() != digest:
-                    raise RuntimeError(f'FSR 4 asset hash mismatch: {name}')
-                target = share / 'fsr4' / name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source, target)
-            for name in ('provenance.json', 'LICENSE-AMD-SDK.md'):
-                shutil.copy2(assets / name, share / 'fsr4' / name)
+        if fsr4.is_file():
             shutil.copy2(fsr4, lib / fsr4.name)
             payloads.append(fsr4)
-            # the GPL component's corresponding source, licence and build instructions
-            shutil.copytree(ROOT / 'third_party/fsr4_native', docs / 'fsr4-source')
-            shutil.copy2(ROOT / 'runtime/nvn/vulkan/fsr4_api.h', docs / 'fsr4-source/fsr4_api.h')
-            shutil.copy2(ROOT / 'scripts/build_fsr4_linux.sh', docs / 'fsr4-source/build_fsr4_linux.sh')
-            shutil.copy2(ROOT / 'docs/adr/0012-native-fsr4-lite.md', docs / 'FSR4-LICENSING.md')
-        elif fsr4.is_file() and (a.fsr4prep / 'monado-fsr4prep').is_file():
-            # no model files: the launcher prepares them on the player's PC (AppRun exports XCDE_FSR4PREP_DIR)
-            shutil.copytree(a.fsr4prep.resolve(), share / 'fsr4prep', symlinks=False)
-            for exe in [share / 'fsr4prep/monado-fsr4prep', *(share / 'fsr4prep/bin').iterdir()]:
-                exe.chmod(0o755)
-            shutil.copy2(fsr4, lib / fsr4.name)
-            payloads.append(fsr4)
-            shutil.copytree(ROOT / 'third_party/fsr4_native', docs / 'fsr4-source')
-            shutil.copy2(ROOT / 'runtime/nvn/vulkan/fsr4_api.h', docs / 'fsr4-source/fsr4_api.h')
-            shutil.copy2(ROOT / 'scripts/build_fsr4_linux.sh', docs / 'fsr4-source/build_fsr4_linux.sh')
+            for notice in ('fsr4-LICENSE', 'fsr4-THIRD_PARTY_NOTICES.md'):
+                if (build / notice).is_file():
+                    shutil.copy2(build / notice, docs / notice)
         else:
-            print('note: no FSR 4 Lite component or assets (scripts/build_fsr4_linux.sh, tools/package/fsr4_prepare.py): '
-                  'packaged without it')
+            print('note: no native FSR 4 component (scripts/build_fsr4_linux.sh): packaged without it')
         if a.release:  # (a shared package must not need the host's desktop stack: build FFmpeg minimal, #107)
             desktop = sorted({f'{p.name}: {n}' for p in payloads for n in linked(p) if DESKTOP.match(n)})
             if desktop:

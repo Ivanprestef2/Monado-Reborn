@@ -35,10 +35,8 @@ rtdir=build/linux/rt
 # XCDE_NATIVE_FSR=0 skips them; a failed component build only leaves that upscaler unavailable.
 if [[ ${XCDE_NATIVE_FSR:-1} != 0 ]]; then
   scripts/build_fsr3_linux.sh || echo 'warning: native FSR 3 not built (needs git, glslangValidator; see third_party/fsr3_native/README.md)' >&2
-  scripts/build_fsr4_linux.sh || echo 'warning: native FSR 4 Lite not built (see third_party/fsr4_native/README.md)' >&2
+  scripts/build_fsr4_linux.sh || echo 'warning: native FSR 4 (fsr4up-vk) not built (needs git, cmake, python3)' >&2
   scripts/build_dlss_linux.sh || echo 'warning: native Linux DLSS not built (run python3 tools/package/setup_linux_dlss.py)' >&2
-  # FSR 4 Lite model assets (tools/package/fsr4_prepare.py, once) are looked up beside the executable
-  [[ ! -d build/fsr4/assets/lite || -e build/linux/fsr4 ]] || ln -s ../fsr4/assets build/linux/fsr4
 fi
 mkdir -p "$rtdir" build/linux/game build/inc
 python3 tools/build/gen_smaa_inc.py third_party/smaa/SMAA.hlsl build/inc/smaa_hlsl.inc

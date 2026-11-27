@@ -14,9 +14,10 @@
 # Upscalers: FSR 1 always; FSR 3 (Linux: native component built from AMD's SDK source; Windows: AMD's signed DLL from
 # the official FidelityFX SDK 1.1.4 release); DLSS on Windows (NVIDIA's official Streamline release,
 # tools/package/install_dlss.py, hash-pinned) and Linux (NVIDIA NGX, tools/package/setup_linux_dlss.py, hash-pinned);
-# FSR 4 Lite on both. FSR 4 Lite's model files are NOT packaged (they are
-# derived from AMD's SDK): the packages carry the preparation tool (tools/build/build_fsr4prep.py) and the launcher's
-# "Prepare FSR 4 Lite" makes them once on the player's PC from AMD's own download.
+# FSR 4: on Linux, amd_fidelityfx_upscaler_vk.so built from auz466/fsr4up-vk (MIT, embeds AMD's MIT SDK 2.4.0 shaders
+# and weights directly — FP8 default on RDNA 4, FSR 4 Lite INT8 default on RDNA 2/3 & Intel Arc); on Windows, AMD's
+# signed amd_fidelityfx_upscaler_vk.dll from FidelityFX SDK 2.4.0 (MIT, hash-pinned and Authenticode-verified). No
+# on-PC preparation step on either platform.
 name: release
 on:
   workflow_dispatch:
@@ -36,6 +37,9 @@ env:
   APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
   FFX_URL: https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/download/v1.1.4/FidelityFX-SDK-v1.1.4.zip
   FFX_SHA256: 0216556bfb0e243cec30004a2a98d38f4e3f7406cb7938e3c1b85c758e95d952   # (AMD publishes no digest: measured once)
+  FFX4_DLL_URL: https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/v2.4.0/Kits/FidelityFX/signedbin/amd_fidelityfx_upscaler_vk.dll
+  FFX4_DLL_SHA256: 4a7e895af6e0b615d40a84d59eb8c2b1054ad91cdd0c739567940270d51bdab7
+  FFX4_LICENSE_URL: https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/v2.4.0/Kits/FidelityFX/docs/license.md
 
 jobs:
   version:
@@ -157,40 +161,11 @@ jobs:
           cmake --preset linux -B build/cmake/release -DMONADO_RELEASE=ON "-DMONADO_VERSION=${{ needs.version.outputs.version }}" -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19 -DMONADO_PGO=build/pgo/monado.profdata
           cmake --build build/cmake/release
           test -f build/linux/libmonado_fsr3.so || { echo "::error::native FSR 3 was not built"; exit 1; }
-          test -f build/linux/libmonado_fsr4.so || { echo "::error::native FSR 4 Lite was not built"; exit 1; }
+          test -f build/linux/amd_fidelityfx_upscaler_vk.so || { echo "::error::native FSR 4 (fsr4up-vk) was not built"; exit 1; }
           test -f build/linux/libmonado_dlss.so || { echo "::error::native Linux DLSS was not built"; exit 1; }
           test -f build/linux/libnvidia-ngx-dlss.so.310.9.1 || { echo "::error::Linux DLSS runtime was not staged"; exit 1; }
       - name: Freeze the builder
         run: .venv/bin/python tools/gamebuild/freeze_gamebuild.py --python .venv/bin/python
-      - name: FSR 4 Lite preparation tool
-        run: .venv/bin/python tools/build/build_fsr4prep.py
-      - name: Point the bundled OpenSSL at the host's CA store
-        # monado-fsr4prep is frozen here with the runner's OpenSSL (Ubuntu), which is compiled with
-        # OPENSSLDIR=/usr/lib/ssl. Arch/SteamOS keep their store in /etc/ssl and Fedora in /etc/pki/tls,
-        # so on those hosts the trust store is empty and the FSR 4 Lite download fails with
-        # "certificate verify failed: unable to get local issuer certificate". The launcher hands its
-        # environment to the preparation tool, so exporting SSL_CERT_FILE in AppRun fixes every host.
-        run: |
-          apprun=packaging/linux/AppRun
-          test -f "$apprun" || { echo "::error::$apprun is missing"; exit 1; }
-          if grep -q 'MONADO_APPIMAGE_CA_BUNDLE' "$apprun"; then
-            echo "AppRun already contains the CA bundle block"
-          else
-            cat > /tmp/monado-ca-bundle.sh <<'EOF'
-          # MONADO_APPIMAGE_CA_BUNDLE: OpenSSL is bundled from the build runner (Ubuntu), whose default
-          # CA path is /usr/lib/ssl. Arch/SteamOS use /etc/ssl and Fedora /etc/pki/tls, so point it at
-          # the host's bundle; otherwise TLS checks fail with "unable to get local issuer certificate"
-          # (the FSR 4 Lite preparation downloads AMD's upscaler DLL over HTTPS).
-          if [ -z "${SSL_CERT_FILE:-}" ]; then
-            for c in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem /etc/ssl/certs/ca-bundle.crt /etc/ssl/ca-bundle.pem; do
-              if [ -f "$c" ]; then export SSL_CERT_FILE="$c"; break; fi
-            done
-          fi
-          EOF
-            sed -i '/^appdir=/r /tmp/monado-ca-bundle.sh' "$apprun"
-            grep -q 'MONADO_APPIMAGE_CA_BUNDLE' "$apprun" || { echo "::error::could not patch $apprun (no appdir= line?)"; exit 1; }
-          fi
-          grep -n -A6 'MONADO_APPIMAGE_CA_BUNDLE' "$apprun"
       - name: appimagetool (pinned)
         run: |
           curl -fsSL -o /tmp/appimagetool "$APPIMAGETOOL_URL"
@@ -284,7 +259,7 @@ jobs:
           path: ~\AppData\Local\zig
           key: zig-windows-${{ env.ZIG_VERSION }}-${{ github.run_id }}
           restore-keys: zig-windows-${{ env.ZIG_VERSION }}-
-      - name: AMD FSR 3 runtime (official FidelityFX SDK 1.1.4) and NVIDIA DLSS (official Streamline, hash-pinned)
+      - name: AMD FSR 3 (SDK 1.1.4), AMD FSR 4 (SDK 2.4.0) and NVIDIA DLSS (Streamline, hash-pinned)
         run: |
           Invoke-WebRequest -Uri $env:FFX_URL -OutFile ffx.zip
           $hash = (Get-FileHash ffx.zip -Algorithm SHA256).Hash.ToLower()
@@ -297,6 +272,13 @@ jobs:
           "amd_fidelityfx_vk.dll signature: $($sig.Status) ($($sig.SignerCertificate.Subject))"
           if ($sig.Status -ne 'Valid') { throw 'amd_fidelityfx_vk.dll is not validly signed' }
           Remove-Item ffx.zip
+          Invoke-WebRequest -Uri $env:FFX4_DLL_URL -OutFile build/amd_fidelityfx_upscaler_vk.dll
+          $h4 = (Get-FileHash build/amd_fidelityfx_upscaler_vk.dll -Algorithm SHA256).Hash.ToLower()
+          if ($h4 -ne $env:FFX4_DLL_SHA256) { throw "amd_fidelityfx_upscaler_vk.dll: sha256 $h4, expected $env:FFX4_DLL_SHA256" }
+          $sig4 = Get-AuthenticodeSignature build/amd_fidelityfx_upscaler_vk.dll
+          "amd_fidelityfx_upscaler_vk.dll signature: $($sig4.Status) ($($sig4.SignerCertificate.Subject))"
+          if ($sig4.Status -ne 'Valid') { throw 'amd_fidelityfx_upscaler_vk.dll is not validly signed' }
+          Invoke-WebRequest -Uri $env:FFX4_LICENSE_URL -OutFile build/fsr4-LICENSE-AMD-SDK.md
           .venv\Scripts\python tools/package/install_dlss.py
       - uses: actions/download-artifact@v4
         with:
@@ -318,33 +300,16 @@ jobs:
         with:
           path: ${{ runner.temp }}\zig-prelink
           key: ${{ steps.prelink-cache.outputs.cache-primary-key }}
-      - name: Build the release runtime, launcher and FSR 4 Lite component
+      - name: Build the release runtime and launcher
         run: |
           $env:PATH = "$PWD\.venv\Scripts;C:\msys64\ucrt64\bin;$env:PATH"
           cmake --preset windows -B build/cmake/release -DMONADO_RELEASE=ON "-DMONADO_VERSION=${{ needs.version.outputs.version }}" "-DMONADO_PGO=build/pgo/monado.profdata"
           cmake --build build/cmake/release
-          foreach ($f in 'build/xcde.exe', 'build/xcde_launcher.exe', 'build/monado_fsr4.dll', 'build/gamebuild/xcde_imports.a') {
+          foreach ($f in 'build/xcde.exe', 'build/xcde_launcher.exe', 'build/amd_fidelityfx_upscaler_vk.dll', 'build/gamebuild/xcde_imports.a') {
             if (-not (Test-Path $f)) { throw "missing $f" }
           }
       - name: Freeze the builder
         run: .venv\Scripts\python tools/gamebuild/freeze_gamebuild.py --python .venv\Scripts\python.exe
-      - name: Restore the FSR 4 Lite preparation tool
-        id: fsr4prep-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: build/fsr4prep
-          key: fsr4prep-windows-${{ hashFiles('tools/build/build_fsr4prep.py', 'tools/package/fsr4_prepare.py', 'tools/gamebuild/gamebuild_stage.py', 'third_party/fsr4cap/**') }}-zig${{ env.ZIG_VERSION }}-v1
-      - name: FSR 4 Lite preparation tool
-        if: steps.fsr4prep-cache.outputs.cache-hit != 'true'
-        run: |
-          $env:PATH = "$PWD\.venv\Scripts;C:\msys64\ucrt64\bin;$env:PATH"
-          .venv\Scripts\python tools/build/build_fsr4prep.py
-      - name: Save the FSR 4 Lite preparation tool
-        if: steps.fsr4prep-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: build/fsr4prep
-          key: ${{ steps.fsr4prep-cache.outputs.cache-primary-key }}
       - name: Package the ZIP (checked with tools/package/package_guard.py)
         env:
           VERSION: ${{ needs.version.outputs.version }}

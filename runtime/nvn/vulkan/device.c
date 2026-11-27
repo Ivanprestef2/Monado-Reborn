@@ -264,7 +264,7 @@ static void create_device(void) {
     if (ne && !ep) FATAL("[vk] out of memory enumerating device extensions\n");
     er = vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
     if (er != VK_SUCCESS) { free(ep); FATAL("[vk] enumerate device extensions: %d\n", er); }
-    const char *ext[48];
+    const char *ext[64];
     uint32_t n_ext = 0;
     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     bool legacy = g_vk.api_version < VK_API_VERSION_1_3;
@@ -335,25 +335,9 @@ static void create_device(void) {
     g_vk.gpl = gpl;
     bool push_ext = false;
 #if defined(__linux__) || defined(_WIN32)
-    // [XCDE] T-FSR4-LITE: the native Lite INT8 shaders' requirements, enabled only when all are present (Vulkan 1.3 path);
-    // the other upscalers do not need them.
-    VkPhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE fsr4_mixed = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MIXED_FLOAT_DOT_PRODUCT_FEATURES_VALVE};
-    VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR fsr4_deriv = {
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR, .pNext = &fsr4_mixed};
-    bool fsr4_push = !legacy && has_ext(ep, ne, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
-    // Drivers can lack both extensions (Windows drivers, Intel ANV, NVIDIA). Lite never uses compute derivatives (no
-    // Lite module declares the capability), and only its prepass uses the VALVE mixed FP16/FP32 dot: without it, the
-    // component rewrites those dots into core FP32 operations (third_party/fsr4_native/portable_dot.h). So push
-    // descriptors are the only extra requirement; a driver with the VALVE feature (RADV) keeps the native shaders.
-    bool fsr4_ext = fsr4_push;
-    // (XCDE_FSR4_PORTABLE_DOT=1: the portable path even where the VALVE feature exists, to test it on any GPU)
-    const char *fsr4_pd = getenv("XCDE_FSR4_PORTABLE_DOT");
-    if (fsr4_ext && !(fsr4_pd && *fsr4_pd == '1') && has_ext(ep, ne, VK_VALVE_SHADER_MIXED_FLOAT_DOT_PRODUCT_EXTENSION_NAME)) {
-        VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fsr4_mixed};
-        vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
-    }
-    if (fsr4_ext) {
+    // [XCDE] Push descriptors (exec.c) + FSR 4.1.2 Vulkan device extensions
+    // (Linux: auz466/fsr4up-vk; Windows: AMD FidelityFX SDK 2.4.0 amd_fidelityfx_upscaler_vk.dll).
+    if (!legacy && has_ext(ep, ne, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME)) {
         ext[n_ext++] = VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME;
         push_ext = true;
         VkPhysicalDevicePushDescriptorPropertiesKHR pdp = {
@@ -362,16 +346,46 @@ static void create_device(void) {
         vkGetPhysicalDeviceProperties2(g_vk.phys, &pq);
         g_vk.max_push_descriptors = pdp.maxPushDescriptors;
     }
-    if (fsr4_mixed.shaderMixedFloatDotProductFloat16AccFloat32)
-        ext[n_ext++] = VK_VALVE_SHADER_MIXED_FLOAT_DOT_PRODUCT_EXTENSION_NAME;
-#ifdef __linux__
-    // (Linux enabled compute derivatives before the portable path existed; keep that device unchanged where available.)
-    if (fsr4_ext && has_ext(ep, ne, VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME)) {
-        VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fsr4_deriv};
-        fsr4_deriv.pNext = NULL;
+    VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR fsr4_deriv = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR};
+    bool fsr4_deriv_ext = false;
+    if (!legacy) {
+        const char *deriv_name = has_ext(ep, ne, VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME)
+            ? VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME
+            : has_ext(ep, ne, VK_NV_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME)
+                ? VK_NV_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME : NULL;
+        if (deriv_name) {
+            VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fsr4_deriv};
+            vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
+            if (fsr4_deriv.computeDerivativeGroupLinear || fsr4_deriv.computeDerivativeGroupQuads) {
+                ext[n_ext++] = deriv_name;
+                fsr4_deriv_ext = true;
+            }
+        }
+    }
+    bool fsr4_coop_ok = false, fsr4_fp8_feat_ok = false;
+#ifdef VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME
+    VkPhysicalDeviceCooperativeMatrixFeaturesKHR fsr4_coop = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
+    if (!legacy && has_ext(ep, ne, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME)) {
+        VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fsr4_coop};
         vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
-        fsr4_deriv.pNext = &fsr4_mixed;
-        if (fsr4_deriv.computeDerivativeGroupQuads) ext[n_ext++] = VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME;
+        if (fsr4_coop.cooperativeMatrix) {
+            ext[n_ext++] = VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME;
+            fsr4_coop_ok = true;
+        }
+    }
+#endif
+#ifdef VK_EXT_SHADER_FLOAT8_EXTENSION_NAME
+    VkPhysicalDeviceShaderFloat8FeaturesEXT fsr4_fp8_feat = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT};
+    if (!legacy && has_ext(ep, ne, VK_EXT_SHADER_FLOAT8_EXTENSION_NAME)) {
+        VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &fsr4_fp8_feat};
+        vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
+        if (fsr4_fp8_feat.shaderFloat8 && fsr4_fp8_feat.shaderFloat8CooperativeMatrix) {
+            ext[n_ext++] = VK_EXT_SHADER_FLOAT8_EXTENSION_NAME;
+            fsr4_fp8_feat_ok = true;
+        }
     }
 #endif
 #endif
@@ -501,7 +515,9 @@ static void create_device(void) {
                                             .samplerMirrorClampToEdge = h12.samplerMirrorClampToEdge,
                                             .uniformAndStorageBuffer8BitAccess = h12.uniformAndStorageBuffer8BitAccess,
                                             .storageBuffer8BitAccess = h12.storageBuffer8BitAccess,
-                                            .scalarBlockLayout = h12.scalarBlockLayout, .shaderFloat16 = h12.shaderFloat16, .pNext = legacy ? (void *)&render_enable : (void *)&f13,
+                                            .scalarBlockLayout = h12.scalarBlockLayout, .shaderFloat16 = h12.shaderFloat16,
+                                            .vulkanMemoryModel = h12.vulkanMemoryModel,
+                                            .pNext = legacy ? (void *)&render_enable : (void *)&f13,
                                             .samplerFilterMinmax = h12.samplerFilterMinmax};  // [XCDE] NVN reduction filters
     g_vk.minmax = h12.samplerFilterMinmax;
     g_vk.shader_float16 = f12.shaderFloat16 == VK_TRUE;
@@ -510,6 +526,8 @@ static void create_device(void) {
                                                                .graphicsPipelineLibrary = VK_TRUE, .pNext = &f12};
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
                                             .storageBuffer16BitAccess = h11.storageBuffer16BitAccess,
+                                            .variablePointersStorageBuffer = h11.variablePointersStorageBuffer,
+                                            .variablePointers = h11.variablePointers,
                                             .pNext = gpl ? (void *)&gplf : (void *)&f12};
     VkPhysicalDeviceFaultFeaturesEXT ff = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT,
                                            .deviceFault = fault ? VK_TRUE : VK_FALSE, .pNext = &f11};
@@ -550,22 +568,43 @@ static void create_device(void) {
     g_vk.multi_draw_indirect = b->multiDrawIndirect != VK_FALSE;
     g_vk.draw_indirect_first_instance = b->drawIndirectFirstInstance != VK_FALSE;
 #if defined(__linux__) || defined(_WIN32)
-    b->shaderStorageImageExtendedFormats = h->shaderStorageImageExtendedFormats;  // [XCDE] FSR 3 FP storage images
-    b->shaderInt16 = h->shaderInt16;  // [XCDE] T-FSR4-LITE
+    b->shaderStorageImageExtendedFormats = h->shaderStorageImageExtendedFormats;  // [XCDE] FSR 3 / FSR 4 FP storage images
+    b->shaderInt16 = h->shaderInt16;
     if (!legacy) f13.shaderIntegerDotProduct = h13.shaderIntegerDotProduct;
     {
         extern bool fsr4_device_ok;
-        fsr4_device_ok = fsr4_ext && b->shaderInt16 && f12.shaderInt8 && f12.shaderFloat16 &&
-            f11.storageBuffer16BitAccess && f12.storageBuffer8BitAccess && f13.shaderIntegerDotProduct;
-        // (each structure only when its extension was enabled above)
-        if (fsr4_mixed.shaderMixedFloatDotProductFloat16AccFloat32) { fsr4_mixed.pNext = f.pNext; f.pNext = &fsr4_mixed; }
-        if (fsr4_ext && fsr4_deriv.computeDerivativeGroupQuads) { fsr4_deriv.pNext = f.pNext; f.pNext = &fsr4_deriv; }
-        // (each requirement separately: a bare "unavailable" said nothing about which one a driver lacks)
-        LOG("[fsr4] Lite INT8 device features: %s (push-descriptor %d, int16 %d, int8 %d, float16 %d, storage16 %d, "
-            "storage8 %d, integer-dot %d; prepass: %s)\n", fsr4_device_ok ? "supported" : "unavailable", (int)fsr4_push,
-            (int)b->shaderInt16, (int)f12.shaderInt8, (int)f12.shaderFloat16, (int)f11.storageBuffer16BitAccess,
-            (int)f12.storageBuffer8BitAccess, (int)f13.shaderIntegerDotProduct,
-            fsr4_mixed.shaderMixedFloatDotProductFloat16AccFloat32 ? "native mixed FP16/FP32 dot" : "portable FP32 dot");
+        extern bool fsr4_fp8_ok;
+        bool fsr4_sub32 = false;
+        if (!legacy && f13.subgroupSizeControl) {
+            VkPhysicalDeviceVulkan13Properties p13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
+            VkPhysicalDeviceProperties2 pq = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p13};
+            vkGetPhysicalDeviceProperties2(g_vk.phys, &pq);
+            fsr4_sub32 = p13.minSubgroupSize <= 32 && p13.maxSubgroupSize >= 32 &&
+                         (p13.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
+        }
+        if (fsr4_deriv_ext) { fsr4_deriv.pNext = f.pNext; f.pNext = &fsr4_deriv; }
+#ifdef VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME
+        if (fsr4_coop_ok) { fsr4_coop.pNext = f.pNext; f.pNext = &fsr4_coop; }
+#endif
+#ifdef VK_EXT_SHADER_FLOAT8_EXTENSION_NAME
+        if (fsr4_fp8_feat_ok) { fsr4_fp8_feat.pNext = f.pNext; f.pNext = &fsr4_fp8_feat; }
+#endif
+        // FP8 is the default for discrete AMD RDNA 4 GPUs; INT8 (Linux: Lite default) for RDNA 2, RDNA 3, Intel Arc, etc.
+        bool fp8_ok = !legacy && g_vk.props.vendorID == 0x1002 &&
+                      g_vk.props.deviceType != VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU &&
+                      fsr4_coop_ok && fsr4_fp8_feat_ok &&
+                      b->shaderInt16 && b->shaderStorageImageWriteWithoutFormat && b->shaderStorageImageExtendedFormats &&
+                      f11.storageBuffer16BitAccess && f11.variablePointers && f11.variablePointersStorageBuffer &&
+                      f12.shaderFloat16 && f12.shaderInt8 && f12.vulkanMemoryModel && fsr4_sub32;
+        bool int8_ok = !legacy && f13.shaderIntegerDotProduct && f12.shaderFloat16 && f12.shaderInt8 &&
+                       b->shaderStorageImageWriteWithoutFormat && b->shaderStorageImageExtendedFormats &&
+                       fsr4_sub32 && fsr4_deriv.computeDerivativeGroupLinear;
+        fsr4_fp8_ok = fp8_ok;
+        fsr4_device_ok = fp8_ok || int8_ok;
+        LOG("[fsr4] FSR 4.1.2 Vulkan device features: %s (fp8 %d, int8 %d; subgroup32 %d, deriv-linear %d, int8-dot %d, fp16 %d, mem-model %d, var-ptr %d)\n",
+            fsr4_device_ok ? "supported" : "unavailable", (int)fp8_ok, (int)int8_ok, (int)fsr4_sub32,
+            (int)fsr4_deriv.computeDerivativeGroupLinear, (int)f13.shaderIntegerDotProduct, (int)f12.shaderFloat16,
+            (int)f12.vulkanMemoryModel, (int)(f11.variablePointers && f11.variablePointersStorageBuffer));
     }
 #endif
     if (!h->shaderInt64) LOG("[vk] warning: no shaderInt64 (64-bit address math in shaders)\n");
@@ -575,7 +614,7 @@ static void create_device(void) {
         extern void dlss_device_requirements(VkInstance inst, VkPhysicalDevice phys, const char **ext, uint32_t *n, uint32_t max,
                                              VkPhysicalDeviceVulkan12Features *f12, VkPhysicalDeviceVulkan13Features *f13,
                                              uint32_t *extra_gfx, uint32_t *extra_compute);
-        dlss_device_requirements(g_vk.inst, g_vk.phys, ext, &n_ext, 48, &f12, &f13, &extra_g, &extra_c);
+        dlss_device_requirements(g_vk.inst, g_vk.phys, ext, &n_ext, 64, &f12, &f13, &extra_g, &extra_c);
     }
     // Queues: ours (index 0 of qfam), Streamline's after it in the same family, and [XCDE] FSR 3 frame generation's
     // present / image-acquire / async-compute queues (temporal.c), picked as AMD's sample does: each from a family

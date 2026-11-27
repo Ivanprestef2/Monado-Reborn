@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
-# [XCDE] T-FSR4-LITE: the optional native FSR 4.1.2 Lite component for Windows, build/monado_fsr4.dll (GPL-2.0-or-later,
-# third_party/fsr4_native; no game dependencies). xcde.exe loads it at run time (LoadLibrary) with the prepared model
-# files from build/fsr4/lite/. Without either, FSR 4 Lite is just unavailable and the other upscalers still work.
-# The same zig c++ as the runtime; the MSYS2 headers come after zig's own C/C++ headers (-idirafter, as in
-# build_rt_gfx.sh), and the Vulkan loader import library from MSYS2.
+# [XCDE] Stage AMD's signed amd_fidelityfx_upscaler_vk.dll (FidelityFX SDK 2.4.0, MIT) beside xcde.exe in build/.
+set -euo pipefail
 cd "$(dirname "$0")/.."
-Z=".venv/Scripts/python -m ziglang c++"
-M=${MSYS2_PREFIX:-/c/msys64/ucrt64}
+DLL_URL="https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/v2.4.0/Kits/FidelityFX/signedbin/amd_fidelityfx_upscaler_vk.dll"
+DLL_SHA256="4a7e895af6e0b615d40a84d59eb8c2b1054ad91cdd0c739567940270d51bdab7"
+LIC_URL="https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/v2.4.0/Kits/FidelityFX/docs/license.md"
 mkdir -p build
-$Z -O2 -std=c++20 -target x86_64-windows-gnu -mcpu=x86_64_v2 -shared -fvisibility=hidden -Iruntime/nvn/vulkan -idirafter "$M/include" -w \
-  third_party/fsr4_native/fsr411.cpp third_party/fsr4_native/monado_adapter.cpp \
-  -o build/monado_fsr4.dll "$M/lib/libvulkan-1.dll.a" || { echo "FAIL fsr4 (FSR 4 Lite will be unavailable)"; exit 1; }
-# The model files: the preparation tool (tools/package/fsr4_prepare.py) writes lite/ under its --out; a copy staged
-# in build/fsr4/assets/lite is placed beside the executable, which is where the runtime reads <exe folder>/fsr4/lite.
-if [ -d build/fsr4/assets/lite ]; then
-  rm -rf build/fsr4/lite && cp -r build/fsr4/assets/lite build/fsr4/lite && echo "FSR 4 Lite model files ready in build/fsr4/lite"
-elif [ ! -d build/fsr4/lite ]; then
-  echo "note: no FSR 4 Lite model files in build/fsr4/lite (see third_party/fsr4_native/README.md); FSR 4 Lite stays unavailable"
+if [ ! -f build/amd_fidelityfx_upscaler_vk.dll ] || [ "$(sha256sum build/amd_fidelityfx_upscaler_vk.dll | cut -d' ' -f1)" != "$DLL_SHA256" ]; then
+  echo "Downloading AMD amd_fidelityfx_upscaler_vk.dll (FidelityFX SDK 2.4.0, 36 MB)..."
+  curl -fsSL -o build/amd_fidelityfx_upscaler_vk.dll.part "$DLL_URL"
+  got=$(sha256sum build/amd_fidelityfx_upscaler_vk.dll.part | cut -d' ' -f1)
+  if [ "$got" != "$DLL_SHA256" ]; then
+    rm -f build/amd_fidelityfx_upscaler_vk.dll.part
+    echo "FAIL: amd_fidelityfx_upscaler_vk.dll SHA-256 $got, expected $DLL_SHA256" >&2
+    exit 1
+  fi
+  mv -f build/amd_fidelityfx_upscaler_vk.dll.part build/amd_fidelityfx_upscaler_vk.dll
 fi
+if [ ! -f build/fsr4-LICENSE-AMD-SDK.md ]; then
+  curl -fsSL -o build/fsr4-LICENSE-AMD-SDK.md "$LIC_URL" || true
+fi
+echo "FSR 4.1.2 Vulkan DLL ready: build/amd_fidelityfx_upscaler_vk.dll"

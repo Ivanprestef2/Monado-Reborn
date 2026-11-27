@@ -68,8 +68,8 @@ class LauncherUtf8Paths(unittest.TestCase):
 
     def test_every_child_process_gets_a_utf16_command_line(self):
         calls = re.findall(r"CreateProcessW\((.*?)\);", CODE, re.S)
-        # game, shader precompile, shader precompile status (T282), game code build, FSR 4 Lite preparation, curl, report
-        self.assertEqual(len(calls), 7)
+        # game, shader precompile, shader precompile status (T282), game code build, curl, report
+        self.assertEqual(len(calls), 6)
         for call in calls:
             self.assertHas("wcmd.data()", call, "the UTF-8 command line, converted")
             self.assertHas("WPath(", call, "the executable and/or the working folder")

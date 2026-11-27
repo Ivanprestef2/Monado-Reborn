@@ -1,9 +1,10 @@
-// [XCDE] T-FSR4-LITE: optional native FSR 4.1.2 Lite INT8 integration.
+// [XCDE] Native FSR 4.1.2 Vulkan integration (Linux: auz466/fsr4up-vk; Windows: AMD FidelityFX SDK 2.4.0).
 #pragma once
 #include "fsr4_api.h"
 #include <stdbool.h>
-#if defined(__linux__) || defined(_WIN32)  // [XCDE] native component: scripts/build_fsr4_linux.sh / build_fsr4_windows.sh
+#if defined(__linux__) || defined(_WIN32)
 extern bool fsr4_device_ok;
+extern bool fsr4_fp8_ok;
 bool fsr4_available(void);
 bool fsr4_record(const MonadoFsr4Frame *frame);
 #else
