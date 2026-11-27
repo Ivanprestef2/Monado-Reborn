@@ -22,7 +22,8 @@
 static uint64_t q_size = 4ull << 20;
 #define Q_SIZE q_size
 enum {
-    QOP_WRAP, QOP_BEGIN, QOP_END, QOP_DRAW, QOP_DRAWIDX, QOP_DISPATCH, QOP_PIPE, QOP_SETS, QOP_PUSH, QOP_VBUF, QOP_IBUF,
+    QOP_WRAP, QOP_BEGIN, QOP_END, QOP_DRAW, QOP_DRAWIDX, QOP_DRAWIDX_IND, QOP_DISPATCH, QOP_PIPE, QOP_SETS, QOP_PUSH, QOP_VBUF, QOP_IBUF,
+    QOP_POLYMODE, QOP_BLENDE, QOP_BLENDEQ, QOP_WMASK,
     QOP_VIEWPORT, QOP_SCISSOR, QOP_BLENDC, QOP_DBIAS, QOP_DBIAS_EN, QOP_DTEST, QOP_DWRITE, QOP_DCMP, QOP_STEST, QOP_SOP, QOP_SCMASK,
     QOP_SWMASK, QOP_SREF, QOP_CULL, QOP_FRONT, QOP_TOPO, QOP_RESTART, QOP_BEGINR, QOP_ENDR, QOP_BARRIER, QOP_CPBUF, QOP_CPIMG,
     QOP_CPB2I, QOP_CPI2B, QOP_BLIT, QOP_RESOLVE, QOP_CLRCOL, QOP_CLRDS, QOP_CLRATT, QOP_QRESET, QOP_TS, QOP_FBL, QOP_SUBMIT,
@@ -198,6 +199,11 @@ void q_vkCmdDraw(VkCommandBuffer cb, uint32_t vc, uint32_t ic, uint32_t fv, uint
 void q_vkCmdDrawIndexed(VkCommandBuffer cb, uint32_t ic, uint32_t inst, uint32_t fi, int32_t vo, uint32_t finst) {
     if (!vkq_enabled()) { (vkCmdDrawIndexed)(cb, ic, inst, fi, vo, finst); return; }
     QREC(QOP_DRAWIDX, cb, QU6); a->a = ic; a->b = inst; a->c = fi; a->e = vo; a->f = finst; q_commit();
+}
+typedef struct { VkBuffer buf; VkDeviceSize off; uint32_t count, stride; } QDrawInd;
+void q_vkCmdDrawIndexedIndirect(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off, uint32_t count, uint32_t stride) {
+    if (!vkq_enabled()) { (vkCmdDrawIndexedIndirect)(cb, buf, off, count, stride); return; }
+    QREC(QOP_DRAWIDX_IND, cb, QDrawInd); a->buf = buf; a->off = off; a->count = count; a->stride = stride; q_commit();
 }
 void q_vkCmdDispatch(VkCommandBuffer cb, uint32_t x, uint32_t y, uint32_t z) {
     if (!vkq_enabled()) { (vkCmdDispatch)(cb, x, y, z); return; }
@@ -378,6 +384,28 @@ void q_vkCmdSetStencilOp(VkCommandBuffer cb, VkStencilFaceFlags f, VkStencilOp f
 QSIMPLE2(vkCmdSetStencilCompareMask, QOP_SCMASK)
 QSIMPLE2(vkCmdSetStencilWriteMask, QOP_SWMASK)
 QSIMPLE2(vkCmdSetStencilReference, QOP_SREF)
+void q_vkCmdSetPolygonModeEXT(VkCommandBuffer cb, VkPolygonMode pm) {
+    if (!vkq_enabled()) { g_vk.cmd_set_polygon_mode(cb, pm); return; }
+    QREC(QOP_POLYMODE, cb, QV); a->v[0] = (uint32_t)pm; q_commit();
+}
+typedef struct { uint32_t first, n; VkBool32 v[8]; } QBlendE;
+void q_vkCmdSetColorBlendEnableEXT(VkCommandBuffer cb, uint32_t first, uint32_t n, const VkBool32 *en) {
+    if (!vkq_enabled()) { g_vk.cmd_set_color_blend_enable(cb, first, n, en); return; }
+    if (n > 8) n = 8;
+    QREC(QOP_BLENDE, cb, QBlendE); a->first = first; a->n = n; memcpy(a->v, en, n * sizeof(VkBool32)); q_commit();
+}
+typedef struct { uint32_t first, n; VkColorBlendEquationEXT eq[8]; } QBlendEq;
+void q_vkCmdSetColorBlendEquationEXT(VkCommandBuffer cb, uint32_t first, uint32_t n, const VkColorBlendEquationEXT *eq) {
+    if (!vkq_enabled()) { g_vk.cmd_set_color_blend_equation(cb, first, n, eq); return; }
+    if (n > 8) n = 8;
+    QREC(QOP_BLENDEQ, cb, QBlendEq); a->first = first; a->n = n; memcpy(a->eq, eq, n * sizeof(VkColorBlendEquationEXT)); q_commit();
+}
+typedef struct { uint32_t first, n; VkColorComponentFlags m[8]; } QWMask;
+void q_vkCmdSetColorWriteMaskEXT(VkCommandBuffer cb, uint32_t first, uint32_t n, const VkColorComponentFlags *m) {
+    if (!vkq_enabled()) { g_vk.cmd_set_color_write_mask(cb, first, n, m); return; }
+    if (n > 8) n = 8;
+    QREC(QOP_WMASK, cb, QWMask); a->first = first; a->n = n; memcpy(a->m, m, n * sizeof(VkColorComponentFlags)); q_commit();
+}
 typedef struct { VkRenderingInfo ri; } QBeginR;
 // [XCDE] Unknown extension chains are recorded inline after draining; never retain caller pointers.
 #define Q_CHAIN(pn) ((pn) != NULL)
@@ -513,6 +541,7 @@ static void q_exec(const QHdr *h) {
     case QOP_END: VK_CHECK((vkEndCommandBuffer)(cb)); break;
     case QOP_DRAW: { const QU6 *a = p; (vkCmdDraw)(cb, a->a, a->b, a->c, a->d); break; }
     case QOP_DRAWIDX: { const QU6 *a = p; (vkCmdDrawIndexed)(cb, a->a, a->b, a->c, a->e, a->f); break; }
+    case QOP_DRAWIDX_IND: { const QDrawInd *a = p; (vkCmdDrawIndexedIndirect)(cb, a->buf, a->off, a->count, a->stride); break; }
     case QOP_DISPATCH: { const QU6 *a = p; (vkCmdDispatch)(cb, a->a, a->b, a->c); break; }
     case QOP_PIPE: { const QPipe *a = p; (vkCmdBindPipeline)(cb, a->bp, a->p); break; }
     case QOP_SETS: {
@@ -546,6 +575,10 @@ static void q_exec(const QHdr *h) {
     case QOP_SCMASK: (vkCmdSetStencilCompareMask)(cb, ((const QV *)p)->v[0], ((const QV *)p)->v[1]); break;
     case QOP_SWMASK: (vkCmdSetStencilWriteMask)(cb, ((const QV *)p)->v[0], ((const QV *)p)->v[1]); break;
     case QOP_SREF: (vkCmdSetStencilReference)(cb, ((const QV *)p)->v[0], ((const QV *)p)->v[1]); break;
+    case QOP_POLYMODE: g_vk.cmd_set_polygon_mode(cb, (VkPolygonMode)((const QV *)p)->v[0]); break;
+    case QOP_BLENDE: { const QBlendE *a = p; g_vk.cmd_set_color_blend_enable(cb, a->first, a->n, a->v); break; }
+    case QOP_BLENDEQ: { const QBlendEq *a = p; g_vk.cmd_set_color_blend_equation(cb, a->first, a->n, a->eq); break; }
+    case QOP_WMASK: { const QWMask *a = p; g_vk.cmd_set_color_write_mask(cb, a->first, a->n, a->m); break; }
     case QOP_BEGINR: g_vk.dispatch.begin_rendering(cb, &((const QBeginR *)p)->ri); break;
     case QOP_ENDR: g_vk.dispatch.end_rendering(cb); break;
     case QOP_BARRIER: g_vk.dispatch.barrier2(cb, &((const QBar *)p)->di); break;

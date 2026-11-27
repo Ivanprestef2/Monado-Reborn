@@ -291,7 +291,11 @@ static uint8_t tex_scalable(const NvnTexture *t) {
     // staircase lines around characters moving through the focus (jumping) at any internal resolution above 720p.
     if (t->width == 64 && t->height == 36) return 0;
     float a = (float)t->width / (float)t->height;
-    if (a > 1.74f && a < 1.81f) return (t->width <= 640 && t->height <= 360) ? 3 : 1;
+    if (a > 1.74f && a < 1.81f) {
+        if (t->width <= 320 && t->height <= 180) return 4;  // quarter-res volumetric/fog/blur
+        if (t->width <= 640 && t->height <= 360) return 3;  // half-res post-process
+        return 1;
+    }
     // [XCDE] T182: the menus' character portraits are 3D renders into 192x544 targets (colour, depth, G-buffer; their
     // post chain at 96x272 / 48x136), drawn ~1:1 on the 1280x720 HUD. Left at guest size they were magnified 3x at 4K
     // (stair-stepped hair, soft faces). Same rendering, more pixels: scaled with the output, uniformly (they sit in the
@@ -301,23 +305,33 @@ static uint8_t tex_scalable(const NvnTexture *t) {
 }
 // [XCDE] Cap scaling on sub-full-res 16:9 post-process targets (<= 640x360: bloom, SSAO/TSSAO, godrays, SSR, DoF blur).
 // At 4K (3x) these low-frequency passes otherwise run at 9x pixel count (~30% of total GPU time on RADV). Default cap
-// 1.5x (1080p-equivalent) keeps full-res 1280x720 scene/G-buffer/lighting/UI at native 4K while preserving aspect ratio
-// on ultrawide. XCDE_SUBRES_SCALE_CAP=0 restores uncapped scaling.
+// 1.25x for half-res (<=640x360) and 1.0x for quarter-res (<=320x180) keeps full-res 1280x720 scene/G-buffer/lighting/UI
+// at native 4K while cutting heavy volumetric/blur fillrate. XCDE_SUBRES_SCALE_CAP=0 / XCDE_QRES_SCALE_CAP=0 restore uncapped.
 static float subres_scale_cap(void) {
     static float cap = -1.0f;
     if (cap < 0.0f) {
         const char *e = getenv("XCDE_SUBRES_SCALE_CAP");
-        cap = e ? strtof(e, NULL) : 1.5f;
+        cap = e ? strtof(e, NULL) : 1.25f;
         if (cap < 0.0f) cap = 0.0f;
         LOG("[vk] sub-res post-process scale cap: %.2fx%s\n", cap, cap == 0.0f ? " (uncapped)" : "");
+    }
+    return cap;
+}
+static float qres_scale_cap(void) {
+    static float cap = -1.0f;
+    if (cap < 0.0f) {
+        const char *e = getenv("XCDE_QRES_SCALE_CAP");
+        cap = e ? strtof(e, NULL) : 1.0f;
+        if (cap < 0.0f) cap = 0.0f;
+        LOG("[vk] quarter-res post-process scale cap: %.2fx%s\n", cap, cap == 0.0f ? " (uncapped)" : "");
     }
     return cap;
 }
 // the scale a scalable target is allocated at (now)
 static void target_scale(const TexBackend *b, float *sx, float *sy) {
     if (b->scalable == 2) { *sx = *sy = fminf(g_rs_x, g_rs_y); return; }
-    if (b->scalable == 3) {
-        float cap = subres_scale_cap();
+    if (b->scalable == 3 || b->scalable == 4) {
+        float cap = b->scalable == 4 ? qres_scale_cap() : subres_scale_cap();
         if (cap > 0.0f && g_rs_y > cap) {
             float k = cap / g_rs_y;
             *sx = g_rs_x * k;
@@ -1165,14 +1179,14 @@ static void upload_texture_(NvnTexture *t, TexBackend *b) {
     b->checked_frame = frame;
     prof_tex_checks++;
     if (t->flags & 0x10) b->dynamic = true;
-    if (full_hash_budget_frame != frame) { full_hash_budget_frame = frame; full_hash_budget = 4 << 20; }
+    if (full_hash_budget_frame != frame) { full_hash_budget_frame = frame; full_hash_budget = 512 << 10; }
     const uint8_t *mem = (const uint8_t *)(uintptr_t)t->addr;
     static int always_full = -1;
     if (always_full < 0) always_full = getenv("LARECOMP_TEX_FULLHASH") || exact ? 1 : 0;
     bool full = b->dynamic || !b->uploaded || always_full;
     static int64_t periodic_frames = -1;
     if (periodic_frames < 0) { const char *e = getenv("XCDE_TEX_PERIODIC"); periodic_frames = e ? atoll(e) : 600; }
-    bool periodic = frame - b->full_frame >= 120 && full_hash_budget >= total;  // (safety net: a full hash now and then)
+    bool periodic = periodic_frames > 0 && (int64_t)(frame - b->full_frame) >= periodic_frames && full_hash_budget >= total;  // (safety net: a full hash now and then)
     if (!full && periodic) { full = true; full_hash_budget -= total; }
     // The OS's page write tracking (exec.c vk_pages_changed, shared with the vertex cache): texture memory the CPU
     // hasn't written since the last check is not hashed at all (dynamic textures were fully hashed every frame,

@@ -103,6 +103,23 @@ typedef struct NvnSync {
 
 // ---- command recording (stored in guest command memory)
 typedef struct {
+    uint32_t valid;         // bitmask: 0=prog 1=ds 2=poly 3=color 4=cmask 5=ms 6=attrib 7=stream 8=vp0 9=sc0
+    uint8_t blend_valid;
+    uint16_t vbuf_valid;
+    uint32_t ubuf_valid[6];
+    uint32_t tex_valid[6];
+    uint64_t program;
+    uint8_t ds[8], poly[4], color[4], cmask[4], ms[0x18];
+    uint8_t blend[8][8];
+    uint32_t nattrib, nstream;
+    uint8_t attrib[32 * 4], stream[16 * 8];
+    uint8_t vp0[16], sc0[16];
+    uint64_t vbuf[16][2];
+    uint64_t ubuf[6][18][2];
+    uint64_t tex[6][32];
+} CmdRecCache;
+
+typedef struct {
     uint64_t mem;    // current command memory chunk (guest address)
     uint64_t size;   // chunk size
     uint64_t used;   // bytes used in chunk
@@ -110,6 +127,7 @@ typedef struct {
     uint64_t callback, callback_data;
     bool recording;
     uint64_t guest;  // the guest NVNcommandBuffer*
+    CmdRecCache cache;  // [XCDE] Perf: per-recording redundant state-bind elision
 } NvnCmdBuf;
 
 // One recorded command: header, the call's integer and float arguments, then copied data.

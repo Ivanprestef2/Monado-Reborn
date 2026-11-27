@@ -43,6 +43,7 @@ typedef struct {
     VkSemaphore timeline;      // value = last completed submission number
     VkCommandPool pool;        // render thread only
     bool custom_border, divisor, host_import, robust2, logic_op, minmax;
+    bool multi_draw_indirect, draw_indirect_first_instance;
     bool sampler_anisotropy;  // [XCDE] the enabled samplerAnisotropy feature (texture filtering option)
     bool dmabuf_import;  // [XCDE] T-LINUX-GTT: VK_KHR_external_memory_fd + VK_EXT_external_memory_dma_buf
     bool feedback_loop;  // [XCDE] VK_EXT_attachment_feedback_loop_layout (#7): colour attachments sampled by the draw that writes them
@@ -52,6 +53,11 @@ typedef struct {
     bool push_descriptor;
     uint32_t max_push_descriptors;
     PFN_vkCmdPushDescriptorSetKHR cmd_push_descriptor_set;
+    bool eds3;  // [XCDE] VK_EXT_extended_dynamic_state3 (polygonMode, colorBlendEnable/Equation, colorWriteMask)
+    PFN_vkCmdSetPolygonModeEXT cmd_set_polygon_mode;
+    PFN_vkCmdSetColorBlendEnableEXT cmd_set_color_blend_enable;
+    PFN_vkCmdSetColorBlendEquationEXT cmd_set_color_blend_equation;
+    PFN_vkCmdSetColorWriteMaskEXT cmd_set_color_write_mask;
     // [XCDE] FSR 3 frame generation's queues (device.c create_device): present, image acquire, async compute; fam UINT32_MAX: none
     VkQueue fg_queue[3];
     uint32_t fg_fam[3], fg_idx[3];
@@ -135,6 +141,8 @@ typedef struct TexBackend {
     int nshare;
     uint32_t w_epoch, w_att, r_epoch;  // [XCDE] T162: full-barrier epoch of the last attachment write, attachment-barrier
                                        // epoch of that write, full-barrier epoch of the last sampling (exec.c pass_barrier)
+    uint64_t w_att_layers;             // [XCDE] Perf: disjoint layer bitmask (0..63) written at level 0 in w_att
+    uint32_t w_att_levels;             // [XCDE] Perf: disjoint mip level bitmask (0..31) written at layer 0 in w_att
     bool has_storage;  // [XCDE] T192: created with STORAGE usage (SULD / SUST views)
     uint8_t nlean;      // [XCDE] spec_lowend_gpu R6b: > 0: the image may only be viewed in lean_fmt[0..nlean)
     VkFormat lean_fmt[3];
