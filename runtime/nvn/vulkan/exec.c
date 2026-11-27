@@ -57,6 +57,7 @@ static int xfb_ctrl_find(uint64_t ctrl) { for (int i = 0; i < n_xfb_ctrl; i++) i
 static uint64_t g_draws_total;  // [XCDE] T240 (XCDE_TRACE_PRESENT: draws in each presented frame)
 uint64_t vk_draws_total(void) { return g_draws_total; }
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
+static uint64_t stat_subset_kept, stat_clear_saved;  // [XCDE] pass-break reductions (subset RT continuation, 0-draw clear elision)
 static struct { uint32_t bits; uint64_t total, in_pass, no_memwr; } bar_hist[16];
 static int bar_hist_n;
 // [XCDE] Which skip site drops draws: counts per source line, the first few occurrences are logged.
@@ -169,8 +170,11 @@ typedef struct {
 } PendingClear;
 static PendingClear pending_clear;
 static void begin_pass(void);
+static bool try_fast_flush_clear(void);
 static void flush_pending_clear(void) {
-    if (pending_clear.color_mask || pending_clear.depth || pending_clear.stencil) begin_pass();
+    if (pending_clear.color_mask || pending_clear.depth || pending_clear.stencil) {
+        if (!try_fast_flush_clear()) begin_pass();
+    }
 }
 static uint64_t tmp_scene_frame = ~0ull;  // [XCDE] T213: the last frame with a scene draw (jittered)
 static uint64_t tmp_presented_scene_frame = ~0ull;  // [XCDE] #168: the last frame whose jittered 3D scene reached the presented image
@@ -1359,6 +1363,7 @@ static struct {
     bool xfb_on, raster_discard;
     uint64_t xfb_written;
 } st;
+static RtState open_rt;  // [XCDE] active Vulkan render pass attachments (for subset RT continuation)
 static uint32_t g_xfbp[8];  // [XCDE] T134: the current draw's XfbP uniform (shader.h XFB_PARAM_INDEX; set in draw_)
 
 uint32_t nvn_window_origin(void);
@@ -1395,8 +1400,9 @@ const char *renderer_stats(void) {
     }
     extern uint64_t g_tex_bytes, g_tex_astc_bytes;  // (textures.c)
     snprintf(stats_text, sizeof stats_text,
-             "%llu draws, %llu skipped, %llu passes, %llu dispatches, %llu flushes, wait %.0fms, compile %d, fbcopy %llu, upload %.1fMB, occlusion %llu (%llu hidden), build waits %llu (%.1fms), prewarm %llu progs %llu pipes, gpl cached %llu linked %llu libs %llu optimized %llu, textures %.0f MB (astc %.0f MB), pipelines %u",
+             "%llu draws, %llu skipped, %llu passes (kept %llu, clr %llu), %llu dispatches, %llu flushes, wait %.0fms, compile %d, fbcopy %llu, upload %.1fMB, occlusion %llu (%llu hidden), build waits %llu (%.1fms), prewarm %llu progs %llu pipes, gpl cached %llu linked %llu libs %llu optimized %llu, textures %.0f MB (astc %.0f MB), pipelines %u",
              (unsigned long long)stat_draws, (unsigned long long)stat_skipped, (unsigned long long)stat_passes,
+             (unsigned long long)stat_subset_kept, (unsigned long long)stat_clear_saved,
              (unsigned long long)stat_dispatches, (unsigned long long)stat_flushes, (double)stat_wait_ns / 1e6,
              atomic_exchange(&stat_compiles, 0), (unsigned long long)stat_feedback_copies, (double)stat_upload_bytes / 1048576.0,
              (unsigned long long)stat_occ_reports, (unsigned long long)stat_occ_hidden, (unsigned long long)stat_build_waits,
@@ -1404,6 +1410,7 @@ const char *renderer_stats(void) {
              (unsigned long long)atomic_exchange(&stat_gpl_cached, 0), (unsigned long long)atomic_exchange(&stat_gpl_linked, 0),
              (unsigned long long)atomic_exchange(&stat_gpl_libs, 0), (unsigned long long)atomic_exchange(&stat_gpl_opt, 0),
              g_tex_bytes / 1048576.0, g_tex_astc_bytes / 1048576.0, pipe_count());
+    stat_subset_kept = stat_clear_saved = 0;
     stat_feedback_copies = stat_upload_bytes = stat_occ_reports = stat_occ_hidden = stat_build_waits = stat_build_wait_ns = 0;
     fb_stats_flush();
     {
@@ -2056,6 +2063,7 @@ static void begin_pass(void) {
     vkCmdBeginRendering(cb, &ri);
     ss_forget();  // (whatever ran between the passes may have set its own state)
     in_pass = true;
+    open_rt = st.rt;
     if (oq_counting) oq_begin(cb);  // [XCDE] T139: this pass's samples count toward the open counter
     pass_dbg_rt = st.rt.ncolor && st.rt.color[0] ? (TexBackend *)st.rt.color[0]->backend : NULL;
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0; vp_wide = 0;
@@ -2240,6 +2248,101 @@ static bool clear_is_full_target(void) {
     return gw > 0 && gh > 0 && st.scissor[0][0] <= 0 && st.scissor[0][1] <= 0 &&
            (int64_t)st.scissor[0][0] + st.scissor[0][2] >= (int64_t)gw &&
            (int64_t)st.scissor[0][1] + st.scissor[0][3] >= (int64_t)gh;
+}
+
+static bool try_fast_flush_clear(void) {
+    // [XCDE] Elide 0-draw clear-only render passes when flushing pending_clear outside an open pass.
+    // Uses direct vkCmdClearColorImage / vkCmdClearDepthStencilImage (no Begin/EndRendering or OQ toggle).
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("XCDE_FAST_FLUSH_CLEAR"); on = !(e && atoi(e) == 0); }
+    if (!on || !fast_clear_on() || in_pass || g_debug_frame || dl_on == 2) return false;
+    PendingClear pc = pending_clear;
+    for (int i = 0; i < 8; i++) {
+        if (!(pc.color_mask & (1u << i))) continue;
+        NvnTexture *t = (i < st.rt.ncolor) ? st.rt.color[i] : NULL;
+        if (!t) continue;
+        TexBackend *b = vk_tex(t, true);
+        if (!b || !b->image || b->samples > 1 || renderer_format_is_depth(t->format)) return false;
+        if (st.rt.has_cview[i] && (st.rt.cview[i].setmask & 4) && vk_format(st.rt.cview[i].format) != b->format) return false;
+    }
+    if (pc.depth || pc.stencil) {
+        NvnTexture *d = st.rt.depth;
+        if (!d) return false;
+        TexBackend *b = vk_tex(d, true);
+        if (!b || !b->image || b->samples > 1 || !renderer_format_is_depth(d->format)) return false;
+        if ((b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) && (b->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) && (pc.depth != pc.stencil)) return false;
+    }
+    memset(&pending_clear, 0, sizeof pending_clear);
+    VkCommandBuffer cb = vk_cmd();
+    bool need_bar = false;
+    for (int i = 0; i < 8; i++) {
+        if (!(pc.color_mask & (1u << i)) || i >= st.rt.ncolor || !st.rt.color[i]) continue;
+        TexBackend *b = (TexBackend *)st.rt.color[i]->backend;
+        if (b->w_epoch == pass_epoch || b->r_epoch == pass_epoch || b->w_att == att_epoch) need_bar = true;
+    }
+    if ((pc.depth || pc.stencil) && st.rt.depth && st.rt.depth->backend) {
+        TexBackend *b = (TexBackend *)st.rt.depth->backend;
+        if (b->w_epoch == pass_epoch || b->r_epoch == pass_epoch || b->w_att == att_epoch) need_bar = true;
+    }
+    if (need_bar) {
+        VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                               .srcStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                               .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT,
+                               .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                               .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT};
+        VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+        vkCmdPipelineBarrier2(cb, &di);
+    }
+    for (int i = 0; i < 8; i++) {
+        if (!(pc.color_mask & (1u << i)) || i >= st.rt.ncolor || !st.rt.color[i]) continue;
+        NvnTexture *t = st.rt.color[i];
+        TexBackend *b = (TexBackend *)t->backend;
+        renderer_mark_gpu_owned(t);
+        (void)renderer_texture_first_write(t);
+        (void)renderer_texture_level_fresh(t);
+        (void)renderer_texture_frame_fresh(t);
+        uint32_t lv = st.rt.has_cview[i] && (st.rt.cview[i].setmask & 1) ? st.rt.cview[i].base_level : 0;
+        uint32_t ly = st.rt.has_cview[i] && (st.rt.cview[i].setmask & 2) ? st.rt.cview[i].min_layer : 0;
+        if (lv >= b->levels) lv = 0;
+        if (ly >= b->layers) ly = 0;
+        VkImageSubresourceRange sub = {VK_IMAGE_ASPECT_COLOR_BIT, lv, 1, ly, 1};
+        vkCmdClearColorImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &pc.color[i], 1, &sub);
+        b->w_epoch = pass_epoch;
+        b->w_att = att_epoch;
+    }
+    if ((pc.depth || pc.stencil) && st.rt.depth) {
+        NvnTexture *d = st.rt.depth;
+        TexBackend *b = (TexBackend *)d->backend;
+        renderer_mark_gpu_owned(d);
+        (void)renderer_texture_first_write(d);
+        (void)renderer_texture_level_fresh(d);
+        (void)renderer_texture_frame_fresh(d);
+        uint32_t lv = st.rt.has_dview && (st.rt.dview.setmask & 1) ? st.rt.dview.base_level : 0;
+        uint32_t ly = st.rt.has_dview && (st.rt.dview.setmask & 2) ? st.rt.dview.min_layer : 0;
+        if (lv >= b->levels) lv = 0;
+        if (ly >= b->layers) ly = 0;
+        VkImageAspectFlags asp = (pc.depth && (b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) |
+                                 (pc.stencil && (b->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
+        VkImageSubresourceRange sub = {asp, lv, 1, ly, 1};
+        VkClearDepthStencilValue dsv = {pc.dval, pc.sval};
+        vkCmdClearDepthStencilImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, &dsv, 1, &sub);
+        b->w_epoch = pass_epoch;
+        b->w_att = att_epoch;
+    }
+    {
+        VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                               .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                               .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                               .dstStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
+                               .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+                                                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT};
+        VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+        vkCmdPipelineBarrier2(cb, &di);
+    }
+    pass_untracked = false;
+    stat_clear_saved++;
+    return true;
 }
 
 static void clear(int index, int kind, const void *color, uint32_t mask, bool depth, float dval, bool stencil, uint32_t sval,
@@ -7787,7 +7890,7 @@ static void draw_(CmdRec *r, bool indexed) {
             if (k.divisor[s] > 1 && !g_vk.divisor) k.divisor[s] = 1;
         }
         for (uint32_t i = 0; i < k.ncolor && i < 8; i++) {
-            if (!st.rt.color[i] || k.color[i] == VK_FORMAT_UNDEFINED) continue;
+            if (i >= (uint32_t)st.rt.ncolor || !st.rt.color[i] || k.color[i] == VK_FORMAT_UNDEFINED) continue;
             // Targets the fragment shader doesn't output keep their contents on Metal, but are undefined in Vulkan
             // (NVIDIA writes black): mask them. Foliage depth pre-passes left black silhouettes (user 2026-10-08).
             k.write_mask[i] = ((pr->fi->out_mask >> (i * 4)) & 0xF) ? (st.channel_mask >> (i * 4)) & 0xF : 0;
@@ -7874,7 +7977,7 @@ static void draw_(CmdRec *r, bool indexed) {
     // ---- depth / stencil (dynamic)
     static int nodt = -1;
     if (nodt < 0) nodt = getenv("LARECOMP_NO_DEPTH_TEST") != NULL;
-    bool dt = st.ds[0] && !nodt && pass_depth;
+    bool dt = st.ds[0] && !nodt && pass_depth && st.rt.depth;
     if (ss_need(SS_DT, ss.dt == (VkBool32)dt)) { ss.dt = dt; vkCmdSetDepthTestEnable(cb, dt); }
     VkBool32 dw = dt && st.ds[1];
     if (ss_need(SS_DW, ss.dw == dw)) { ss.dw = dw; vkCmdSetDepthWriteEnable(cb, dw); }
@@ -7889,7 +7992,7 @@ static void draw_(CmdRec *r, bool indexed) {
     bool equal_tol = dop == VK_COMPARE_OP_EQUAL && tol;
     if (equal_tol) dop = VK_COMPARE_OP_LESS_OR_EQUAL;
     if (ss_need(SS_DOP, ss.dop == dop)) { ss.dop = dop; vkCmdSetDepthCompareOp(cb, dop); }
-    bool sten = st.ds[3] && pass_stencil;
+    bool sten = st.ds[3] && pass_stencil && st.rt.depth;
     {   // (debugging) XCDE_NO_STENCIL_FS=<fs code addr hex>: stencil test off for that program's draws
         static uint64_t ns = ~0ull;
         if (ns == ~0ull) ns = getenv("XCDE_NO_STENCIL_FS") ? strtoull(getenv("XCDE_NO_STENCIL_FS"), NULL, 16) : 0;
@@ -8953,8 +9056,9 @@ static void exec_list(uint64_t handle, int depth) {
             st.rt.depth = (NvnTexture *)(uintptr_t)rt->depth;
             st.rt.dview = rt->dview;
             st.rt.has_dview = rt->has_dview;
-            static int always = -1;
+            static int always = -1, subset_on = -1;
             if (always < 0) always = getenv("LARECOMP_VK_PASS_RESTART") != NULL;
+            if (subset_on < 0) { const char *e = getenv("XCDE_SUBSET_PASS"); subset_on = !(e && atoi(e) == 0); }
             if (always || memcmp(&prev, &st.rt, sizeof prev)) {
                 if (pending_clear.color_mask || pending_clear.depth || pending_clear.stencil) {
                     RtState next = st.rt;
@@ -8962,7 +9066,41 @@ static void exec_list(uint64_t handle, int depth) {
                     flush_pending_clear();
                     st.rt = next;
                 }
-                st.rt_dirty = true;
+                bool keep_pass = false;
+                if (subset_on && !always && in_pass && !st.rt_dirty) {
+                    bool ok = true;
+                    if (st.rt.depth) {
+                        if (st.rt.depth != open_rt.depth || st.rt.has_dview != open_rt.has_dview ||
+                            (st.rt.has_dview && memcmp(&st.rt.dview, &open_rt.dview, sizeof st.rt.dview) != 0))
+                            ok = false;
+                    }
+                    if (ok && open_rt.ncolor && open_rt.color[0] && renderer_texture_presented(open_rt.color[0]) &&
+                        (!st.rt.ncolor || st.rt.color[0] != open_rt.color[0]))
+                        ok = false;
+                    for (int i = 0; ok && i < st.rt.ncolor; i++) {
+                        if (!st.rt.color[i]) continue;
+                        if (i >= (int)pass_ncolor || i >= open_rt.ncolor || st.rt.color[i] != open_rt.color[i] ||
+                            st.rt.has_cview[i] != open_rt.has_cview[i] ||
+                            (st.rt.has_cview[i] && memcmp(&st.rt.cview[i], &open_rt.cview[i], sizeof st.rt.cview[i]) != 0))
+                            ok = false;
+                    }
+                    if (ok && (st.rt.ncolor > 0 || st.rt.depth != NULL)) {
+                        NvnTexture *ref = NULL;
+                        for (int i = 0; i < st.rt.ncolor && !ref; i++) if (st.rt.color[i]) ref = st.rt.color[i];
+                        if (!ref) ref = st.rt.depth;
+                        if (ref) {
+                            float rsx, rsy;
+                            renderer_texture_scale(ref, &rsx, &rsy);
+                            if (rsx != pass_sx || rsy != pass_sy) ok = false;
+                        }
+                        if (ok) keep_pass = true;
+                    }
+                }
+                if (keep_pass) {
+                    stat_subset_kept++;
+                } else {
+                    st.rt_dirty = true;
+                }
                 st.skey_gen = ++g_skey_gen;
                 st.pipe_gen = ++g_pipe_gen;
             }
