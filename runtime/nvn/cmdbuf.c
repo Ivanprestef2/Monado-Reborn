@@ -116,9 +116,26 @@ static CmdRec *rec(Cpu *c, NvnCmdBuf *cb, uint32_t op, uint32_t extra) {
     return r;
 }
 
+static inline int cmdbuf_elide_on(void) {
+    static int on = -1;
+    if (__builtin_expect(on < 0, 0)) {
+        const char *e = getenv("XCDE_CMDBUF_ELIDE");
+        on = (!e || atoi(e) != 0) ? 1 : 0;
+    }
+    return on;
+}
+static inline void cmdbuf_cache_reset(NvnCmdBuf *cb) {
+    cb->cache.valid = 0;
+    cb->cache.blend_valid = 0;
+    cb->cache.vbuf_valid = 0;
+    memset(cb->cache.ubuf_valid, 0, sizeof cb->cache.ubuf_valid);
+    memset(cb->cache.tex_valid, 0, sizeof cb->cache.tex_valid);
+}
+
 NVN(nvnCommandBufferBeginRecording) {
     NvnCmdBuf *cb = cb_of(A(0));
     cb->recording = true;
+    cmdbuf_cache_reset(cb);
     rec(c, cb, CMD_BARRIER, 0);  // makes sure memory exists; the list starts here
     cb->start = cb->mem + cb->used - sizeof(CmdRec);
 }
@@ -126,6 +143,7 @@ NVN(nvnCommandBufferEndRecording) {
     NvnCmdBuf *cb = cb_of(A(0));
     rec(c, cb, CMD_END, 0);
     cb->recording = false;
+    cmdbuf_cache_reset(cb);
     RET(cb->start);
 }
 NVN(nvnCommandBufferIsRecording) { RET(cb_of(A(0))->recording); }
@@ -156,35 +174,160 @@ static CmdRec *record_copy(Cpu *c, uint32_t op, int arg, uint32_t len) {
 // ---- state binding
 NVN(nvnCommandBufferBindProgram) {
     Snap s = snap(c);
-    CmdRec *r = record(c, CMD_BIND_PROGRAM, 0, &s);
-    // [XCDE] T240: the program's frozen copy, not the object: the Switch's command buffer holds the shader addresses
-    // bound, and the game sets other shaders on a program object (or finalizes it and a new one gets its memory) while
-    // the render worker still has draws of the old ones to record - those drew with the new shaders (a face with
-    // another material's textures / black, Reyn's body as his weapon; more often the further the worker lags behind)
+    // [XCDE] T240: the program's frozen copy, not the object
     const NvnProgram *p = HOST(NvnProgram, s.x[1]);
-    r->x[0] = (uint64_t)(uintptr_t)(p && p->frozen ? p->frozen : p);  // host program
+    uint64_t fp = (uint64_t)(uintptr_t)(p && p->frozen ? p->frozen : p);
+    NvnCmdBuf *cb = cb_of(s.x[0]);
+    if (cmdbuf_elide_on()) {
+        if ((cb->cache.valid & 1u) && cb->cache.program == fp) return;
+        cb->cache.program = fp;
+        cb->cache.valid |= 1u;
+    }
+    CmdRec *r = record(c, CMD_BIND_PROGRAM, 0, &s);
+    r->x[0] = fp;  // host program
 }
-NVN(nvnCommandBufferBindBlendState) { record_copy(c, CMD_BIND_BLEND, 1, 8); }
-NVN(nvnCommandBufferBindChannelMaskState) { record_copy(c, CMD_BIND_CHANNEL_MASK, 1, 4); }
-NVN(nvnCommandBufferBindColorState) { record_copy(c, CMD_BIND_COLOR, 1, 4); }
-NVN(nvnCommandBufferBindDepthStencilState) { record_copy(c, CMD_BIND_DEPTH_STENCIL, 1, 8); }
-NVN(nvnCommandBufferBindMultisampleState) { record_copy(c, CMD_BIND_MULTISAMPLE, 1, 0x18); }
-NVN(nvnCommandBufferBindPolygonState) { record_copy(c, CMD_BIND_POLYGON, 1, 4); }
-NVN(nvnCommandBufferBindVertexAttribState) { record_copy(c, CMD_BIND_VERTEX_ATTRIB, 2, (uint32_t)A(1) * 4); }
-NVN(nvnCommandBufferBindVertexStreamState) { record_copy(c, CMD_BIND_VERTEX_STREAM, 2, (uint32_t)A(1) * 8); }
+NVN(nvnCommandBufferBindBlendState) {
+    NvnCmdBuf *cb = cb_of(A(0));
+    const uint8_t *src = (const uint8_t *)(uintptr_t)A(1);
+    if (src && cmdbuf_elide_on()) {
+        uint8_t idx = src[0] & 7u;
+        if ((cb->cache.blend_valid & (1u << idx)) && memcmp(cb->cache.blend[idx], src, 8) == 0) return;
+        memcpy(cb->cache.blend[idx], src, 8);
+        cb->cache.blend_valid |= (uint8_t)(1u << idx);
+    }
+    record_copy(c, CMD_BIND_BLEND, 1, 8);
+}
+NVN(nvnCommandBufferBindChannelMaskState) {
+    NvnCmdBuf *cb = cb_of(A(0));
+    const void *src = (const void *)(uintptr_t)A(1);
+    if (src && cmdbuf_elide_on()) {
+        if ((cb->cache.valid & (1u << 4)) && memcmp(cb->cache.cmask, src, 4) == 0) return;
+        memcpy(cb->cache.cmask, src, 4);
+        cb->cache.valid |= (1u << 4);
+    }
+    record_copy(c, CMD_BIND_CHANNEL_MASK, 1, 4);
+}
+NVN(nvnCommandBufferBindColorState) {
+    NvnCmdBuf *cb = cb_of(A(0));
+    const void *src = (const void *)(uintptr_t)A(1);
+    if (src && cmdbuf_elide_on()) {
+        if ((cb->cache.valid & (1u << 3)) && memcmp(cb->cache.color, src, 4) == 0) return;
+        memcpy(cb->cache.color, src, 4);
+        cb->cache.valid |= (1u << 3);
+    }
+    record_copy(c, CMD_BIND_COLOR, 1, 4);
+}
+NVN(nvnCommandBufferBindDepthStencilState) {
+    NvnCmdBuf *cb = cb_of(A(0));
+    const void *src = (const void *)(uintptr_t)A(1);
+    if (src && cmdbuf_elide_on()) {
+        if ((cb->cache.valid & (1u << 1)) && memcmp(cb->cache.ds, src, 8) == 0) return;
+        memcpy(cb->cache.ds, src, 8);
+        cb->cache.valid |= (1u << 1);
+    }
+    record_copy(c, CMD_BIND_DEPTH_STENCIL, 1, 8);
+}
+NVN(nvnCommandBufferBindMultisampleState) {
+    NvnCmdBuf *cb = cb_of(A(0));
+    const void *src = (const void *)(uintptr_t)A(1);
+    if (src && cmdbuf_elide_on()) {
+        if ((cb->cache.valid & (1u << 5)) && memcmp(cb->cache.ms, src, 0x18) == 0) return;
+        memcpy(cb->cache.ms, src, 0x18);
+        cb->cache.valid |= (1u << 5);
+    }
+    record_copy(c, CMD_BIND_MULTISAMPLE, 1, 0x18);
+}
+NVN(nvnCommandBufferBindPolygonState) {
+    NvnCmdBuf *cb = cb_of(A(0));
+    const void *src = (const void *)(uintptr_t)A(1);
+    if (src && cmdbuf_elide_on()) {
+        if ((cb->cache.valid & (1u << 2)) && memcmp(cb->cache.poly, src, 4) == 0) return;
+        memcpy(cb->cache.poly, src, 4);
+        cb->cache.valid |= (1u << 2);
+    }
+    record_copy(c, CMD_BIND_POLYGON, 1, 4);
+}
+NVN(nvnCommandBufferBindVertexAttribState) {
+    NvnCmdBuf *cb = cb_of(A(0));
+    uint32_t na = (uint32_t)A(1);
+    const void *src = (const void *)(uintptr_t)A(2);
+    if (na <= 32 && (!na || src) && cmdbuf_elide_on()) {
+        if ((cb->cache.valid & (1u << 6)) && cb->cache.nattrib == na && (!na || memcmp(cb->cache.attrib, src, (size_t)na * 4) == 0)) return;
+        cb->cache.nattrib = na;
+        if (na) memcpy(cb->cache.attrib, src, (size_t)na * 4);
+        cb->cache.valid |= (1u << 6);
+    } else {
+        cb->cache.valid &= ~(1u << 6);
+    }
+    record_copy(c, CMD_BIND_VERTEX_ATTRIB, 2, na * 4);
+}
+NVN(nvnCommandBufferBindVertexStreamState) {
+    NvnCmdBuf *cb = cb_of(A(0));
+    uint32_t ns = (uint32_t)A(1);
+    const void *src = (const void *)(uintptr_t)A(2);
+    if (ns <= 16 && (!ns || src) && cmdbuf_elide_on()) {
+        if ((cb->cache.valid & (1u << 7)) && cb->cache.nstream == ns && (!ns || memcmp(cb->cache.stream, src, (size_t)ns * 8) == 0)) return;
+        cb->cache.nstream = ns;
+        if (ns) memcpy(cb->cache.stream, src, (size_t)ns * 8);
+        cb->cache.valid |= (1u << 7);
+    } else {
+        cb->cache.valid &= ~(1u << 7);
+    }
+    record_copy(c, CMD_BIND_VERTEX_STREAM, 2, ns * 8);
+}
 
 // (cmd, first, count, const NVNbufferRange*) and the single-binding forms
-NVN(nvnCommandBufferBindVertexBuffers) { record_copy(c, CMD_BIND_VERTEX_BUFFERS, 3, (uint32_t)A(2) * 16); }
+NVN(nvnCommandBufferBindVertexBuffers) {
+    NvnCmdBuf *cb = cb_of(A(0));
+    uint32_t first = (uint32_t)A(1), cnt = (uint32_t)A(2);
+    const uint64_t *src = (const uint64_t *)(uintptr_t)A(3);
+    if (src && cnt && first < 16 && first + cnt <= 16 && cmdbuf_elide_on()) {
+        uint16_t mask = (uint16_t)(((1u << cnt) - 1u) << first);
+        if ((cb->cache.vbuf_valid & mask) == mask && memcmp(cb->cache.vbuf[first], src, (size_t)cnt * 16) == 0) return;
+        memcpy(cb->cache.vbuf[first], src, (size_t)cnt * 16);
+        cb->cache.vbuf_valid |= mask;
+    } else if (first < 16) {
+        cb->cache.vbuf_valid = 0;
+    }
+    record_copy(c, CMD_BIND_VERTEX_BUFFERS, 3, cnt * 16);
+}
 NVN(nvnCommandBufferBindVertexBuffer) {
     Snap s = snap(c);
+    NvnCmdBuf *cb = cb_of(s.x[0]);
+    if (s.x[1] < 16 && cmdbuf_elide_on()) {
+        uint32_t idx = (uint32_t)s.x[1];
+        if ((cb->cache.vbuf_valid & (1u << idx)) && cb->cache.vbuf[idx][0] == s.x[2] && cb->cache.vbuf[idx][1] == s.x[3]) return;
+        cb->cache.vbuf[idx][0] = s.x[2]; cb->cache.vbuf[idx][1] = s.x[3];
+        cb->cache.vbuf_valid |= (uint16_t)(1u << idx);
+    }
     CmdRec *r = record(c, CMD_BIND_VERTEX_BUFFERS, 16, &s);
     r->x[0] = s.x[1]; r->x[1] = 1;
     memcpy(r->extra, &s.x[2], 16);
 }
 // (cmd, stage, first, count, const NVNbufferRange*)
-NVN(nvnCommandBufferBindUniformBuffers) { record_copy(c, CMD_BIND_UNIFORM_BUFFERS, 4, (uint32_t)A(3) * 16); }
+NVN(nvnCommandBufferBindUniformBuffers) {
+    NvnCmdBuf *cb = cb_of(A(0));
+    uint32_t stg = (uint32_t)A(1), first = (uint32_t)A(2), cnt = (uint32_t)A(3);
+    const uint64_t *src = (const uint64_t *)(uintptr_t)A(4);
+    if (src && cnt && stg < 6 && first < 18 && first + cnt <= 18 && cmdbuf_elide_on()) {
+        uint32_t mask = ((1u << cnt) - 1u) << first;
+        if ((cb->cache.ubuf_valid[stg] & mask) == mask && memcmp(cb->cache.ubuf[stg][first], src, (size_t)cnt * 16) == 0) return;
+        memcpy(cb->cache.ubuf[stg][first], src, (size_t)cnt * 16);
+        cb->cache.ubuf_valid[stg] |= mask;
+    } else if (stg < 6) {
+        cb->cache.ubuf_valid[stg] = 0;
+    }
+    record_copy(c, CMD_BIND_UNIFORM_BUFFERS, 4, cnt * 16);
+}
 NVN(nvnCommandBufferBindUniformBuffer) {
     Snap s = snap(c);
+    NvnCmdBuf *cb = cb_of(s.x[0]);
+    if (s.x[1] < 6 && s.x[2] < 18 && cmdbuf_elide_on()) {
+        uint32_t stg = (uint32_t)s.x[1], idx = (uint32_t)s.x[2];
+        if ((cb->cache.ubuf_valid[stg] & (1u << idx)) && cb->cache.ubuf[stg][idx][0] == s.x[3] && cb->cache.ubuf[stg][idx][1] == s.x[4]) return;
+        cb->cache.ubuf[stg][idx][0] = s.x[3]; cb->cache.ubuf[stg][idx][1] = s.x[4];
+        cb->cache.ubuf_valid[stg] |= (1u << idx);
+    }
     CmdRec *r = record(c, CMD_BIND_UNIFORM_BUFFERS, 16, &s);
     r->x[0] = s.x[1]; r->x[1] = s.x[2]; r->x[2] = 1;
     memcpy(r->extra, &s.x[3], 16);
@@ -197,9 +340,29 @@ NVN(nvnCommandBufferBindStorageBuffer) {
     memcpy(r->extra, &s.x[3], 16);
 }
 // (cmd, stage, first, count, const handle*)
-NVN(nvnCommandBufferBindTextures) { record_copy(c, CMD_BIND_TEXTURES, 4, (uint32_t)A(3) * 8); }
+NVN(nvnCommandBufferBindTextures) {
+    NvnCmdBuf *cb = cb_of(A(0));
+    uint32_t stg = (uint32_t)A(1), first = (uint32_t)A(2), cnt = (uint32_t)A(3);
+    const uint64_t *src = (const uint64_t *)(uintptr_t)A(4);
+    if (src && cnt && stg < 6 && first < 32 && first + cnt <= 32 && cmdbuf_elide_on()) {
+        uint32_t mask = (cnt == 32 ? ~0u : ((1u << cnt) - 1u)) << first;
+        if ((cb->cache.tex_valid[stg] & mask) == mask && memcmp(&cb->cache.tex[stg][first], src, (size_t)cnt * 8) == 0) return;
+        memcpy(&cb->cache.tex[stg][first], src, (size_t)cnt * 8);
+        cb->cache.tex_valid[stg] |= mask;
+    } else if (stg < 6) {
+        cb->cache.tex_valid[stg] = 0;
+    }
+    record_copy(c, CMD_BIND_TEXTURES, 4, cnt * 8);
+}
 NVN(nvnCommandBufferBindTexture) {
     Snap s = snap(c);
+    NvnCmdBuf *cb = cb_of(s.x[0]);
+    if (s.x[1] < 6 && s.x[2] < 32 && cmdbuf_elide_on()) {
+        uint32_t stg = (uint32_t)s.x[1], idx = (uint32_t)s.x[2];
+        if ((cb->cache.tex_valid[stg] & (1u << idx)) && cb->cache.tex[stg][idx] == s.x[3]) return;
+        cb->cache.tex[stg][idx] = s.x[3];
+        cb->cache.tex_valid[stg] |= (1u << idx);
+    }
     CmdRec *r = record(c, CMD_BIND_TEXTURES, 8, &s);
     r->x[0] = s.x[1]; r->x[1] = s.x[2]; r->x[2] = 1;
     memcpy(r->extra, &s.x[3], 8);
@@ -501,8 +664,8 @@ PLAIN(nvnCommandBufferWaitEvent, CMD_WAIT_EVENT)
 PLAIN(nvnCommandBufferReportCounter, CMD_REPORT_COUNTER)
 NVN(nvnCommandBufferReportValue) { (void)c; }
 PLAIN(nvnCommandBufferResetCounter, CMD_RESET_COUNTER)  // [XCDE] T139 (cmd, counter type): occlusion queries
-NVN(nvnCommandBufferCallCommands) { record_copy(c, CMD_CALL, 2, (uint32_t)A(1) * 8); }
-NVN(nvnCommandBufferCopyCommands) { record_copy(c, CMD_CALL, 2, (uint32_t)A(1) * 8); }
+NVN(nvnCommandBufferCallCommands) { cmdbuf_cache_reset(cb_of(A(0))); record_copy(c, CMD_CALL, 2, (uint32_t)A(1) * 8); }
+NVN(nvnCommandBufferCopyCommands) { cmdbuf_cache_reset(cb_of(A(0))); record_copy(c, CMD_CALL, 2, (uint32_t)A(1) * 8); }
 NVN(nvnCommandBufferInsertDebugMarker) { (void)c; }
 NVN(nvnCommandBufferInsertDebugMarkerDynamic) { (void)c; }
 NVN(nvnCommandBufferInsertDebugMarkerStatic) { (void)c; }

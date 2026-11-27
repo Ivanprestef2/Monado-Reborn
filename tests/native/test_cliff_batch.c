@@ -77,7 +77,7 @@ int main(void) {
         if (fault == 1) second->x[2]++;
         if (fault == 2) second->x[4]++;
         if (fault == 3) second->x[5]++;
-        if (fault == 4) second->x[6] = 2;
+        if (fault == 4) second->x[6] = 0;
         if (fault == 5) { VkCliffRange v = {base + 104, 1000}; memcpy(vb->extra, &v, sizeof v); }
         if (fault == 6) { VkCliffRange v = {base + 52, 51}; memcpy(vb->extra, &v, sizeof v); }
         if (fault == 7) initial.size = 103;
@@ -123,6 +123,14 @@ int main(void) {
     draw(200); append(CMD_END, 0);
     b = vk_inst_batch_scan(first, (VkCliffRange){base, 4000}, streams3, 3, 2, 64);
     assert(b.draws == 1 && b.inst_stream == 2 && b.next == vb_ok && b.last.addr == base);
+
+    // Multi-instance contiguous draws merge and sum instance counts.
+    used = 0; first = draw(300); first->x[6] = 3;
+    bind(base + 52 * 3, 1000); stream(); CmdRec *d2 = draw(300); d2->x[6] = 5;
+    bind(base + 52 * 8, 1000); stream(); CmdRec *d3 = draw(300); d3->x[6] = 4;
+    CmdRec *d_end = append(CMD_END, 0);
+    b = vk_cliff_batch_scan(first, (VkCliffRange){base, 1000}, streams, 64);
+    assert(b.draws == 3 && b.instances == 12 && b.next == d_end && b.last.addr == base + 52 * 8);
 
     printf("PASS: %llu source instance fetches, state/sync boundaries, index changes, bounds and final state\n", (unsigned long long)checked);
 }

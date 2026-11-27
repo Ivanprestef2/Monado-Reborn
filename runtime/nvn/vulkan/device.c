@@ -375,6 +375,24 @@ static void create_device(void) {
     }
 #endif
 #endif
+    bool eds3_ext = false;
+    VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eds3_have = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
+    {
+        const char *e = getenv("XCDE_EDS3");
+        bool want_eds3 = !e || atoi(e) != 0;
+        if (want_eds3 && has_ext(ep, ne, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME)) {
+            VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &eds3_have};
+            vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
+            if (eds3_have.extendedDynamicState3PolygonMode &&
+                eds3_have.extendedDynamicState3ColorBlendEnable &&
+                eds3_have.extendedDynamicState3ColorBlendEquation &&
+                eds3_have.extendedDynamicState3ColorWriteMask) {
+                ext[n_ext++] = VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME;
+                eds3_ext = true;
+            }
+        }
+    }
     free(ep);
 
     // features the backend relies on (all present on current desktop drivers)
@@ -441,22 +459,30 @@ static void create_device(void) {
         if (g_vk.feedback_local_read) ext[n_ext++] = VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME;
     }
     local_read.pNext = NULL;
+    VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eds3_en = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT,
+        .extendedDynamicState3PolygonMode = VK_TRUE,
+        .extendedDynamicState3ColorBlendEnable = VK_TRUE,
+        .extendedDynamicState3ColorBlendEquation = VK_TRUE,
+        .extendedDynamicState3ColorWriteMask = VK_TRUE,
+        .pNext = g_vk.feedback_local_read ? (void *)&local_read : NULL};
     // [XCDE] v12: attachment feedback loop layout enable (chained only when the device has the extension + feature:
     // chaining a feature struct without support fails vkCreateDevice and the game would not boot)
     VkPhysicalDeviceAttachmentFeedbackLoopLayoutFeaturesEXT afl = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_FEATURES_EXT,
         .attachmentFeedbackLoopLayout = g_vk.feedback_loop ? VK_TRUE : VK_FALSE,
-        .pNext = g_vk.feedback_local_read ? (void *)&local_read : NULL};
+        .pNext = eds3_ext ? (void *)&eds3_en : (g_vk.feedback_local_read ? (void *)&local_read : NULL)};
+    void *tail_feat = g_vk.feedback_loop ? (void *)&afl : (eds3_ext ? (void *)&eds3_en : NULL);
     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT div = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT,
         .vertexAttributeInstanceRateDivisor = g_vk.divisor ? VK_TRUE : VK_FALSE,
         .vertexAttributeInstanceRateZeroDivisor = VK_FALSE,
-        .pNext = g_vk.feedback_loop ? (void *)&afl : NULL};
+        .pNext = tail_feat};
     VkPhysicalDeviceCustomBorderColorFeaturesEXT cbc = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT,
         .customBorderColors = g_vk.custom_border ? VK_TRUE : VK_FALSE,
         .customBorderColorWithoutFormat = g_vk.custom_border && cbc_have.customBorderColorWithoutFormat ? VK_TRUE : VK_FALSE,
-        .pNext = g_vk.divisor ? (void *)&div : g_vk.feedback_loop ? (void *)&afl : NULL};
+        .pNext = g_vk.divisor ? (void *)&div : tail_feat};
     VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
                                             .dynamicRendering = h13.dynamicRendering, .synchronization2 = h13.synchronization2,
                                             .shaderDemoteToHelperInvocation = h13.shaderDemoteToHelperInvocation,
@@ -464,10 +490,10 @@ static void create_device(void) {
                                             .maintenance4 = h13.maintenance4,
                                             .pipelineCreationCacheControl = h13.pipelineCreationCacheControl,  // [XCDE] T188
                                             .subgroupSizeControl = h13.subgroupSizeControl, .computeFullSubgroups = h13.computeFullSubgroups,
-                                            .pNext = g_vk.custom_border ? (void *)&cbc : g_vk.divisor ? (void *)&div : g_vk.feedback_loop ? (void *)&afl : NULL};
+                                            .pNext = g_vk.custom_border ? (void *)&cbc : g_vk.divisor ? (void *)&div : tail_feat};
     VkPhysicalDeviceSynchronization2Features sync_enable = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES,
                                                            .synchronization2 = sync_have.synchronization2,
-                                                           .pNext = g_vk.custom_border ? (void *)&cbc : g_vk.divisor ? (void *)&div : g_vk.feedback_loop ? (void *)&afl : NULL};
+                                                           .pNext = g_vk.custom_border ? (void *)&cbc : g_vk.divisor ? (void *)&div : tail_feat};
     VkPhysicalDeviceDynamicRenderingFeatures render_enable = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES,
                                                              .dynamicRendering = render_have.dynamicRendering, .pNext = &sync_enable};
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
@@ -519,6 +545,10 @@ static void create_device(void) {
     b->geometryShader = h->geometryShader;  // [XCDE] the game's point-sprite geometry shaders
     b->logicOp = h->logicOp;  // [XCDE] T176: ColorState logic ops (the probe-lighting index map ORs its slots)
     g_vk.logic_op = h->logicOp;
+    b->multiDrawIndirect = h->multiDrawIndirect;
+    b->drawIndirectFirstInstance = h->drawIndirectFirstInstance;
+    g_vk.multi_draw_indirect = b->multiDrawIndirect != VK_FALSE;
+    g_vk.draw_indirect_first_instance = b->drawIndirectFirstInstance != VK_FALSE;
 #if defined(__linux__) || defined(_WIN32)
     b->shaderStorageImageExtendedFormats = h->shaderStorageImageExtendedFormats;  // [XCDE] FSR 3 FP storage images
     b->shaderInt16 = h->shaderInt16;  // [XCDE] T-FSR4-LITE
@@ -609,6 +639,15 @@ static void create_device(void) {
         g_vk.cmd_push_descriptor_set = (PFN_vkCmdPushDescriptorSetKHR)vkGetDeviceProcAddr(g_vk.dev, "vkCmdPushDescriptorSetKHR");
         g_vk.push_descriptor = g_vk.cmd_push_descriptor_set != NULL && g_vk.max_push_descriptors >= 8;
         LOG("[vk] push descriptors: %s (max %u)\n", g_vk.push_descriptor ? "on" : "off", g_vk.max_push_descriptors);
+    }
+    if (eds3_ext) {
+        g_vk.cmd_set_polygon_mode = (PFN_vkCmdSetPolygonModeEXT)vkGetDeviceProcAddr(g_vk.dev, "vkCmdSetPolygonModeEXT");
+        g_vk.cmd_set_color_blend_enable = (PFN_vkCmdSetColorBlendEnableEXT)vkGetDeviceProcAddr(g_vk.dev, "vkCmdSetColorBlendEnableEXT");
+        g_vk.cmd_set_color_blend_equation = (PFN_vkCmdSetColorBlendEquationEXT)vkGetDeviceProcAddr(g_vk.dev, "vkCmdSetColorBlendEquationEXT");
+        g_vk.cmd_set_color_write_mask = (PFN_vkCmdSetColorWriteMaskEXT)vkGetDeviceProcAddr(g_vk.dev, "vkCmdSetColorWriteMaskEXT");
+        g_vk.eds3 = g_vk.cmd_set_polygon_mode && g_vk.cmd_set_color_blend_enable &&
+                    g_vk.cmd_set_color_blend_equation && g_vk.cmd_set_color_write_mask;
+        LOG("[vk] extended dynamic state 3: %s\n", g_vk.eds3 ? "on" : "off");
     }
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
     for (int k = 0; k < 3; k++)

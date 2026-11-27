@@ -34,6 +34,11 @@ VkResult q_vkBeginCommandBuffer(VkCommandBuffer, const VkCommandBufferBeginInfo 
 VkResult q_vkEndCommandBuffer(VkCommandBuffer);
 void q_vkCmdDraw(VkCommandBuffer, uint32_t, uint32_t, uint32_t, uint32_t);
 void q_vkCmdDrawIndexed(VkCommandBuffer, uint32_t, uint32_t, uint32_t, int32_t, uint32_t);
+void q_vkCmdDrawIndexedIndirect(VkCommandBuffer, VkBuffer, VkDeviceSize, uint32_t, uint32_t);
+void q_vkCmdSetPolygonModeEXT(VkCommandBuffer, VkPolygonMode);
+void q_vkCmdSetColorBlendEnableEXT(VkCommandBuffer, uint32_t, uint32_t, const VkBool32 *);
+void q_vkCmdSetColorBlendEquationEXT(VkCommandBuffer, uint32_t, uint32_t, const VkColorBlendEquationEXT *);
+void q_vkCmdSetColorWriteMaskEXT(VkCommandBuffer, uint32_t, uint32_t, const VkColorComponentFlags *);
 void q_vkCmdDispatch(VkCommandBuffer, uint32_t, uint32_t, uint32_t);
 void q_vkCmdBindPipeline(VkCommandBuffer, VkPipelineBindPoint, VkPipeline);
 void q_vkCmdBindDescriptorSets(VkCommandBuffer, VkPipelineBindPoint, VkPipelineLayout, uint32_t, uint32_t, const VkDescriptorSet *,
@@ -97,6 +102,11 @@ void q_vkCmdPushDescriptorSetCompact(PFN_vkCmdPushDescriptorSetKHR, VkCommandBuf
 #define vkEndCommandBuffer(...) q_vkEndCommandBuffer(__VA_ARGS__)
 #define vkCmdDraw(...) q_vkCmdDraw(__VA_ARGS__)
 #define vkCmdDrawIndexed(...) q_vkCmdDrawIndexed(__VA_ARGS__)
+#define vkCmdDrawIndexedIndirect(...) q_vkCmdDrawIndexedIndirect(__VA_ARGS__)
+#define vkCmdSetPolygonModeEXT(...) q_vkCmdSetPolygonModeEXT(__VA_ARGS__)
+#define vkCmdSetColorBlendEnableEXT(...) q_vkCmdSetColorBlendEnableEXT(__VA_ARGS__)
+#define vkCmdSetColorBlendEquationEXT(...) q_vkCmdSetColorBlendEquationEXT(__VA_ARGS__)
+#define vkCmdSetColorWriteMaskEXT(...) q_vkCmdSetColorWriteMaskEXT(__VA_ARGS__)
 #define vkCmdDispatch(...) q_vkCmdDispatch(__VA_ARGS__)
 #define vkCmdBindPipeline(...) q_vkCmdBindPipeline(__VA_ARGS__)
 #define vkCmdBindDescriptorSets(...) q_vkCmdBindDescriptorSets(__VA_ARGS__)
