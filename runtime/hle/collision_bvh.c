@@ -1523,9 +1523,10 @@ void xcde_occluder_test(Cpu *c) {
         uint32_t dbits;
         memcpy(&dbits, &dot_nd, 4);
         c->v[0] = dbits;
-        extern void f_70008b6c58(Cpu *c);
+        static GuestFn fn_acos_plt;
+        if (!fn_acos_plt) fn_acos_plt = rt_resolve_fn(c, 0x70008b6c58ull);
         c->x[30] = 0;
-        f_70008b6c58(c);
+        fn_acos_plt(c);
         uint32_t abits = (uint32_t)c->v[0];
         float ang;
         memcpy(&ang, &abits, 4);
@@ -1707,8 +1708,9 @@ void xcde_model_bounds_update(Cpu *c) {
         *(float *)(uintptr_t)(obj + 0x15cull) = 0.0f;
     }
 
-    extern void f_7000687f70(Cpu *c);
-    __attribute__((musttail)) return f_7000687f70(c);
+    static GuestFn fn_bounds_tail;
+    if (!fn_bounds_tail) fn_bounds_tail = rt_resolve_fn(c, 0x7000687f70ull);
+    __attribute__((musttail)) return fn_bounds_tail(c);
 }
 
 // Native C fast paths for SDK libc memcpy (f_70044f11b8) and strcmp (f_70044d7900).
