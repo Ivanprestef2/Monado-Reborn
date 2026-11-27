@@ -8,6 +8,9 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef __SSE4_2__
+#include <nmmintrin.h>
+#endif
 
 #include "vk.h"
 #include "vkq.h"  // [XCDE] the ordered recording worker: uploads, copies and barriers queue in order with the draws
@@ -155,21 +158,24 @@ static VkFmt fmt_of_(uint32_t f) {
     }
 }
 
-// [XCDE] perf: called for every attachment and texture of every draw; the answer never changes (racing writers store
-// the same value)
-static VkFmt fmt_of(uint32_t f) {
-    static VkFmt tab[1024];
-    static _Atomic uint8_t have[1024];
-    if (f >= 1024) return fmt_of_(f);
-    if (!atomic_load_explicit(&have[f], memory_order_acquire)) {
-        tab[f] = fmt_of_(f);
-        atomic_store_explicit(&have[f], 1, memory_order_release);
-        // [XCDE] formats other recomps got wrong, logged on first use (XCDE: none of them in field / battle / menus):
-        // D16 (Maxwell rounds a shadow compare reference to 16 bits first) and the 16-bit packed formats (LASRecomp
-        // af6bfb4: NVN RGB5A1 / RGBA4 are the reverse of Vulkan's R5G5B5A1 / R4G4B4A4)
-        if ((f >= 0x39 && f <= 0x3C) || (f >= 0x95 && f <= 0x97) || f == 0x32) LOG("[vk] format %#x in use (16-bit packed or D16)\n", f);
+// [XCDE] Wave 14: compact 256-entry L1-friendly format LUT + cold miss path.
+static VkFmt s_fmt_tab[256];
+static _Atomic uint8_t s_fmt_have[256];
+__attribute__((noinline, cold))
+static VkFmt fmt_of_slow(uint32_t f) {
+    VkFmt v = fmt_of_(f);
+    if (f < 256) {
+        s_fmt_tab[f] = v;
+        atomic_store_explicit(&s_fmt_have[f], 1, memory_order_release);
+        if ((f >= 0x39 && f <= 0x3C) || (f >= 0x95 && f <= 0x97) || f == 0x32)
+            LOG("[vk] format %#x in use (16-bit packed or D16)\n", f);
     }
-    return tab[f];
+    return v;
+}
+static inline VkFmt fmt_of(uint32_t f) {
+    if (__builtin_expect(f < 256 && atomic_load_explicit(&s_fmt_have[f], memory_order_acquire), 1))
+        return s_fmt_tab[f];
+    return fmt_of_slow(f);
 }
 
 bool renderer_format_is_depth(uint32_t f) { return f >= 0x31 && f <= 0x36; }
@@ -387,6 +393,87 @@ void vk_image_init_layout(VkCommandBuffer cb, VkImage img, VkImageAspectFlags as
     vkCmdPipelineBarrier2(cb, &di);
 }
 
+// [XCDE] Perf: persistent VkImageLayout tracking (XCDE_OPTIMAL_LAYOUTS=0 disables for A/B).
+// Keeps non-storage, non-feedback render targets and depth buffers in COLOR_ATTACHMENT_OPTIMAL /
+// DEPTH_STENCIL_ATTACHMENT_OPTIMAL / SHADER_READ_ONLY_OPTIMAL across passes so AMD RADV keeps DCC/HTILE compressed.
+bool vk_optimal_layouts_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("XCDE_OPTIMAL_LAYOUTS"); on = !(e && *e == '0'); }
+    return on != 0;
+}
+
+static void layout_stage_access(VkImageLayout l, bool src, VkPipelineStageFlags2 *st, VkAccessFlags2 *ac) {
+    switch (l) {
+    case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+        *st = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        *ac = src ? VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
+                  : (VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+        return;
+    case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+        *st = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        *ac = src ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+                  : (VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+        return;
+    case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+        *st = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+              VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        *ac = src ? VK_ACCESS_2_NONE : VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        return;
+    case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+        *st = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        *ac = src ? VK_ACCESS_2_NONE : VK_ACCESS_2_TRANSFER_READ_BIT;
+        return;
+    case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+        *st = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        *ac = src ? VK_ACCESS_2_TRANSFER_WRITE_BIT : VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        return;
+    default:
+        *st = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        *ac = src ? (VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT)
+                  : (VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+        return;
+    }
+}
+
+void vk_tex_transition_batch(VkCommandBuffer cb, TexBackend **bs, const VkImageLayout *wants, uint32_t count) {
+    if (!count || !cb) return;
+    VkImageMemoryBarrier2 bar[64];
+    uint32_t nb = 0;
+    bool opt = vk_optimal_layouts_on();
+    for (uint32_t i = 0; i < count && nb < 64; i++) {
+        TexBackend *b = bs[i];
+        if (!b || !b->image) continue;
+        VkImageLayout old_l = b->cur_layout ? b->cur_layout : VK_IMAGE_LAYOUT_GENERAL;
+        VkImageLayout new_l = (!opt || b->has_storage) ? VK_IMAGE_LAYOUT_GENERAL : wants[i];
+        if (old_l == new_l) { b->cur_layout = new_l; continue; }
+        VkPipelineStageFlags2 ss, ds;
+        VkAccessFlags2 sa, da;
+        layout_stage_access(old_l, true, &ss, &sa);
+        layout_stage_access(new_l, false, &ds, &da);
+        bar[nb++] = (VkImageMemoryBarrier2){
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = ss, .srcAccessMask = sa,
+            .dstStageMask = ds, .dstAccessMask = da,
+            .oldLayout = old_l, .newLayout = new_l,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = b->image,
+            .subresourceRange = {b->aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS},
+        };
+        b->cur_layout = new_l;
+    }
+    if (!nb) return;
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = nb, .pImageMemoryBarriers = bar};
+    vkCmdPipelineBarrier2(cb, &di);
+}
+
+void vk_tex_transition(VkCommandBuffer cb, TexBackend *b, VkImageLayout want) {
+    if (!b || !b->image) return;
+    VkImageLayout old_l = b->cur_layout ? b->cur_layout : VK_IMAGE_LAYOUT_GENERAL;
+    VkImageLayout new_l = (!vk_optimal_layouts_on() || b->has_storage) ? VK_IMAGE_LAYOUT_GENERAL : want;
+    if (old_l == new_l) { b->cur_layout = new_l; return; }
+    vk_tex_transition_batch(cb, &b, &new_l, 1);
+}
+
 // Images destroyed by the guest are kept until the submissions that may use them have completed.
 typedef struct { VkImage img; VmaAllocation mem; VkImageView view; uint64_t seq; VkBuffer buf; VkDeviceMemory raw_mem; } Dead;
 static Dead *dead;
@@ -559,6 +646,7 @@ static void create_image(NvnTexture *t, TexBackend *b, bool for_render) {
                  : t->target == 8 ? VK_IMAGE_VIEW_TYPE_CUBE : t->target == 9 ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY
                  : layers > 1 || t->target == 4 || t->target == 6 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
     vk_image_init_layout(vk_upload_cmd(), b->image, b->aspect);
+    b->cur_layout = VK_IMAGE_LAYOUT_GENERAL;
     if (depthfmt) {
         // New depth / stencil images start zeroed (as fresh memory reads on Apple GPUs). The game builds its depth
         // pyramid with depth-only copies, so the stencil of those images was never written: whatever the memory
@@ -694,6 +782,8 @@ static void resize_backend_if_needed(NvnTexture *t, TexBackend *b, bool for_rend
         VkCommandBuffer cb = vk_upload_cmd();
         vk_full_barrier(cb);
         vk_watch(b->image, "textures.c: resize vkCmdBlitImage");
+        vk_tex_transition(cb, &old, VK_IMAGE_LAYOUT_GENERAL);
+        vk_tex_transition(cb, b, VK_IMAGE_LAYOUT_GENERAL);
         vkCmdBlitImage(cb, old.image, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL,
                        plan.level_count, blits, plan.linear_filter ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
         VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -772,11 +862,37 @@ void vk_textures_reset(void) {
 // ================================================================== uploads (same change detection as metal.m)
 static uint64_t full_hash_budget, full_hash_budget_frame;
 
-// Four independent lanes (one serial multiply chain ran at ~1.5 bytes/cycle; dynamic textures are hashed every
-// frame). Values are only compared within a run.
+// Four independent lanes (hardware CRC32C on x86-64-v2+; values are only compared within a run).
 static uint64_t hash_full(const uint8_t *p, uint64_t n) {
     uint64_t h0 = 0x9E3779B97F4A7C15ull ^ n, h1 = 0xC2B2AE3D27D4EB4Full, h2 = 0x165667B19E3779F9ull, h3 = 0x27D4EB2F165667C5ull;
     uint64_t i = 0;
+#ifdef __SSE4_2__
+    for (; i + 32 <= n; i += 32) {
+        uint64_t v[4];
+        memcpy(v, p + i, 32);
+        h0 = _mm_crc32_u64(h0, v[0]);
+        h1 = _mm_crc32_u64(h1, v[1]);
+        h2 = _mm_crc32_u64(h2, v[2]);
+        h3 = _mm_crc32_u64(h3, v[3]);
+    }
+    if (i + 16 <= n) {
+        uint64_t v[2];
+        memcpy(v, p + i, 16);
+        h0 = _mm_crc32_u64(h0, v[0]);
+        h1 = _mm_crc32_u64(h1, v[1]);
+        i += 16;
+    }
+    if (i + 8 <= n) {
+        uint64_t v;
+        memcpy(&v, p + i, 8);
+        h2 = _mm_crc32_u64(h2, v);
+        i += 8;
+    }
+    uint64_t h = (h0 * 0x9E3779B97F4A7C15ull) ^ (h1 * 0xC2B2AE3D27D4EB4Full) ^ (h2 * 0x165667B19E3779F9ull) ^ (h3 * 0x27D4EB2F165667C5ull);
+    for (; i < n; i++) h = (h ^ p[i]) * 0x100000001B3ull;
+    h ^= h >> 30;
+    h *= 0xBF58476D1CE4E5B9ull;
+#else
     for (; i + 32 <= n; i += 32) {
         uint64_t v[4];
         memcpy(v, p + i, 32);
@@ -787,14 +903,57 @@ static uint64_t hash_full(const uint8_t *p, uint64_t n) {
     }
     uint64_t h = h0 ^ (h1 * 0x9E3779B97F4A7C15ull) ^ (h2 * 0xC2B2AE3D27D4EB4Full) ^ (h3 * 0x165667B19E3779F9ull);
     for (; i < n; i++) h = (h ^ p[i]) * 0x100000001B3ull;
+#endif
     return h ^ (h >> 31);
 }
 
+// [XCDE] Perf: 4-lane hardware CRC32C 32-byte sampler (<=128 steps = 4KB coverage).
 static uint64_t fnv_sample(const uint8_t *p, uint64_t n) {
-    uint64_t h = 1469598103934665603ull;
-    uint64_t step = n > 4096 ? n / 4096 : 1;
-    for (uint64_t i = 0; i < n; i += step) { h ^= p[i]; h *= 1099511628211ull; }
-    return h ^ n;
+    if (n < 32) {
+        uint64_t h = 1469598103934665603ull;
+        for (uint64_t i = 0; i < n; i++) { h ^= p[i]; h *= 1099511628211ull; }
+        return h ^ n;
+    }
+    uint64_t h0 = 0x9E3779B97F4A7C15ull ^ n;
+    uint64_t h1 = 0xC2B2AE3D27D4EB4Full;
+    uint64_t h2 = 0x165667B19E3779F9ull;
+    uint64_t h3 = 0x27D4EB2F165667C5ull;
+    uint64_t stride = n > 4096 ? (n >> 7) : 32;  // <=128 32-byte samples (~4KB total)
+    if (stride < 32) stride = 32;
+    uint64_t lim = n - 32;
+#ifdef __SSE4_2__
+    for (uint64_t i = 0; i <= lim; i += stride) {
+        uint64_t v[4];
+        memcpy(v, p + i, 32);
+        h0 = _mm_crc32_u64(h0, v[0]);
+        h1 = _mm_crc32_u64(h1, v[1]);
+        h2 = _mm_crc32_u64(h2, v[2]);
+        h3 = _mm_crc32_u64(h3, v[3]);
+    }
+    uint64_t tail[4];
+    memcpy(tail, p + lim, 32);
+    h0 = _mm_crc32_u64(h0, tail[0]);
+    h1 = _mm_crc32_u64(h1, tail[1]);
+    h2 = _mm_crc32_u64(h2, tail[2]);
+    h3 = _mm_crc32_u64(h3, tail[3]);
+#else
+    for (uint64_t i = 0; i <= lim; i += stride) {
+        uint64_t v[4];
+        memcpy(v, p + i, 32);
+        h0 = (h0 ^ v[0]) * 0x100000001B3ull; h0 ^= h0 >> 29;
+        h1 = (h1 ^ v[1]) * 0x100000001B3ull; h1 ^= h1 >> 29;
+        h2 = (h2 ^ v[2]) * 0x100000001B3ull; h2 ^= h2 >> 29;
+        h3 = (h3 ^ v[3]) * 0x100000001B3ull; h3 ^= h3 >> 29;
+    }
+    uint64_t tail[4];
+    memcpy(tail, p + lim, 32);
+    h0 = (h0 ^ tail[0]) * 0x100000001B3ull;
+    h1 = (h1 ^ tail[1]) * 0x100000001B3ull;
+    h2 = (h2 ^ tail[2]) * 0x100000001B3ull;
+    h3 = (h3 ^ tail[3]) * 0x100000001B3ull;
+#endif
+    uint64_t h = (h0 * 0x9E3779B97F4A7C15ull) ^ (h1 * 0xC2B2AE3D27D4EB4Full) ^ (h2 * 0x165667B19E3779F9ull) ^ (h3 * 0x27D4EB2F165667C5ull);
+    return h ^ (h >> 31);
 }
 
 static pthread_mutex_t pending_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -816,6 +975,7 @@ static void upload_pending(TexBackend *b) {
                             .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
     VkCommandBuffer cb = vk_upload_cmd();
     vk_dl_note_upload((void *)b->image, rg.imageExtent.width, rg.imageExtent.height, rg.imageSubresource.mipLevel);
+                vk_tex_transition(cb, b, VK_IMAGE_LAYOUT_GENERAL);
                 vk_watch(b->image, "textures.c:505 vkCmdCopyBufferToImage"); vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
 }
 
@@ -972,11 +1132,11 @@ static bool dz_level(VkCommandBuffer cb, const uint8_t *src, const LevelLayout *
 }
 
 static uint64_t up_wc_ns, up_hash_ns, up_cmd_ns, up_tr_ns, up_cp_ns;  // (XCDE_PROF_UPLOAD) parts of the last check
+static int g_up_prof = -1;
 // [XCDE] perf: XCDE_PROF_UPLOAD=1 logs every texture check that takes over 2 ms (what made scene changes hitch)
 static void upload_texture(NvnTexture *t, TexBackend *b) {
-    static int on = -1;
-    if (on < 0) on = getenv("XCDE_PROF_UPLOAD") != NULL;
-    if (!on) { upload_texture_(t, b); return; }
+    if (__builtin_expect(g_up_prof < 0, 0)) g_up_prof = getenv("XCDE_PROF_UPLOAD") != NULL;
+    if (__builtin_expect(!g_up_prof, 1)) { upload_texture_(t, b); return; }
     uint64_t t0 = SDL_GetTicksNS(), h0 = prof_tex_full_bytes;
     up_wc_ns = up_hash_ns = up_cmd_ns = up_tr_ns = up_cp_ns = 0;
     upload_texture_(t, b);
@@ -997,8 +1157,11 @@ static void upload_texture_(NvnTexture *t, TexBackend *b) {
     if (!exact && b->uploaded && !b->dynamic && ((frame + ((uintptr_t)b >> 6)) & 7)) return;
     const FormatInfo *fi = t->layout.fmt;
     if (!fi || !fi->bpb) return;
-    VkFmt mf = fmt_of(t->format);
-    uint64_t total = tegra_total_size(&t->layout);
+    uint64_t total = b->total_size;
+    if (__builtin_expect(!total, 0)) {
+        total = tegra_total_size(&t->layout);
+        b->total_size = total;
+    }
     b->checked_frame = frame;
     prof_tex_checks++;
     if (t->flags & 0x10) b->dynamic = true;
@@ -1019,9 +1182,9 @@ static void upload_texture_(NvnTexture *t, TexBackend *b) {
     if (watch && !always_full) {
         extern int vk_pages_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now);
         uint32_t now = 0;
-        uint64_t q = SDL_GetTicksNS();
+        uint64_t q = __builtin_expect(g_up_prof > 0, 0) ? SDL_GetTicksNS() : 0;
         int ch = vk_pages_changed(t->addr, total, b->wgen, &now);
-        up_wc_ns += SDL_GetTicksNS() - q;
+        if (__builtin_expect(g_up_prof > 0, 0)) up_wc_ns += SDL_GetTicksNS() - q;
         if (ch >= 0) {
             b->wgen = now;
             if (!ch && b->uploaded) {
@@ -1037,11 +1200,11 @@ static void upload_texture_(NvnTexture *t, TexBackend *b) {
         if (sh == b->sample_hash) return;
     }
     prof_tex_full++; prof_tex_full_bytes += total; if (b->dynamic) prof_tex_dyn++;
-    uint64_t hq = SDL_GetTicksNS();
+    uint64_t hq = __builtin_expect(g_up_prof > 0, 0) ? SDL_GetTicksNS() : 0;
     uint64_t h = hash_full(mem, total);
-    up_hash_ns += SDL_GetTicksNS() - hq;
+    if (__builtin_expect(g_up_prof > 0, 0)) up_hash_ns += SDL_GetTicksNS() - hq;
     b->full_frame = frame;
-    b->sample_hash = fnv_sample(mem, total);
+    if (!b->dynamic) b->sample_hash = fnv_sample(mem, total);
     if (b->uploaded && h == b->data_hash) return;
     // [XCDE] glitch watch (XCDE_GLITCH_WATCH=1): a texture whose contents change soon after its first upload was most
     // likely uploaded while the game was still loading it - drawn wrong (black / garbage) until this re-upload
@@ -1067,10 +1230,11 @@ static void upload_texture_(NvnTexture *t, TexBackend *b) {
     }
     b->data_hash = h;
     b->uploaded = true;
+    VkFmt mf = fmt_of(t->format);
     if (b->format != mf.vf && !b->astc_bw) return;  // unsupported format: nothing sensible to copy
-    uint64_t cq = SDL_GetTicksNS();
+    uint64_t cq = __builtin_expect(g_up_prof > 0, 0) ? SDL_GetTicksNS() : 0;
     VkCommandBuffer cb = vk_upload_cmd();
-    up_cmd_ns += SDL_GetTicksNS() - cq;
+    if (__builtin_expect(g_up_prof > 0, 0)) up_cmd_ns += SDL_GetTicksNS() - cq;
     uint32_t layers = t->layout.layers ? t->layout.layers : 1;
     if (layers > b->layers && b->depth == 1) layers = b->layers;
     uint64_t layer_size = tegra_layer_size(&t->layout);
@@ -1080,17 +1244,33 @@ static void upload_texture_(NvnTexture *t, TexBackend *b) {
         for (uint32_t lv = 0; lv < levels; lv++) {
             LevelLayout l = tegra_level(&t->layout, lv);
             if (b->astc_bw) {  // blocks -> linear block rows -> RGBA8 texels
+                // [XCDE] Perf: reuse CPU scratch buffers and decode into cached CPU RAM before a single linear
+                // memcpy to write-combined BAR staging memory (avoids strided 16-48B writes to WC PCIe memory).
+                static uint8_t *astc_blk_buf, *astc_rgba_buf;
+                static size_t astc_blk_cap, astc_rgba_cap;
                 const uint8_t *src = (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset;
-                uint8_t *blocks = malloc((uint64_t)l.wb * l.hb * 16);
-                if (linear) for (uint32_t y = 0; y < l.hb; y++) memcpy(blocks + (uint64_t)y * l.wb * 16, src + (uint64_t)y * t->stride, l.wb * 16);
-                else tegra_deswizzle(src, blocks, l.wb, l.hb, 1, 16, l.block_height_log2, l.block_depth_log2);
-                VkSpan s = vk_transient((uint64_t)l.w * l.h * 4, 16);
-                astc_decode_ldr(blocks, l.w, l.h, b->astc_bw, b->astc_bh, b->astc_srgb, s.ptr);
-                free(blocks);
+                size_t blk_sz = (size_t)l.wb * l.hb * 16;
+                size_t rgba_sz = (size_t)l.w * l.h * 4;
+                if (blk_sz > astc_blk_cap) {
+                    free(astc_blk_buf);
+                    astc_blk_buf = malloc(blk_sz);
+                    astc_blk_cap = astc_blk_buf ? blk_sz : 0;
+                }
+                if (rgba_sz > astc_rgba_cap) {
+                    free(astc_rgba_buf);
+                    astc_rgba_buf = malloc(rgba_sz);
+                    astc_rgba_cap = astc_rgba_buf ? rgba_sz : 0;
+                }
+                if (linear) for (uint32_t y = 0; y < l.hb; y++) memcpy(astc_blk_buf + (size_t)y * l.wb * 16, src + (size_t)y * t->stride, l.wb * 16);
+                else tegra_deswizzle(src, astc_blk_buf, l.wb, l.hb, 1, 16, l.block_height_log2, l.block_depth_log2);
+                astc_decode_ldr(astc_blk_buf, l.w, l.h, b->astc_bw, b->astc_bh, b->astc_srgb, astc_rgba_buf);
+                VkSpan s = vk_transient(rgba_sz, 16);
+                memcpy(s.ptr, astc_rgba_buf, rgba_sz);
                 VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = l.w, .bufferImageHeight = l.h,
                                         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},
                                         .imageExtent = {l.w < level_w(b, lv) ? l.w : level_w(b, lv), l.h < level_h(b, lv) ? l.h : level_h(b, lv), 1}};
                 vk_dl_note_upload((void *)b->image, rg.imageExtent.width, rg.imageExtent.height, rg.imageSubresource.mipLevel);
+                vk_tex_transition(cb, b, VK_IMAGE_LAYOUT_GENERAL);
                 vk_watch(b->image, "textures.c:584 vkCmdCopyBufferToImage"); vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
                 continue;
             }
@@ -1194,6 +1374,7 @@ static void upload_texture_(NvnTexture *t, TexBackend *b) {
                                                     b->depth > 1 ? d : 1}};
             if (b->aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) continue;  // packed D/S: no CPU layout
             vk_dl_note_upload((void *)b->image, rg.imageExtent.width, rg.imageExtent.height, rg.imageSubresource.mipLevel);
+                vk_tex_transition(cb, b, VK_IMAGE_LAYOUT_GENERAL);
                 vk_watch(b->image, "textures.c:642 vkCmdCopyBufferToImage"); vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
         }
     }
@@ -1245,19 +1426,35 @@ void vk_views_forget(TexBackend *b) { views_forget(b); }
 uint32_t vk_view_gen;  // bumped whenever a cached view may be destroyed (exec.c's per-frame texture memo)
 static void views_forget(TexBackend *b) {
     vk_view_gen++;
+    b->last_view = VK_NULL_HANDLE;
+    if (__builtin_expect(!b->view_slot_overflow, 1)) {
+        for (uint8_t k = 0; k < b->n_view_slots; k++) {
+            ViewEnt *e = &view_tab[b->view_slots[k]];
+            if (e->b == b) { defer((Dead){.view = e->view}); e->b = NULL; e->view = VK_NULL_HANDLE; }
+        }
+        b->n_view_slots = 0;
+        return;
+    }
     for (int i = 0; i < VIEW_TAB; i++)
         if (view_tab[i].b == b) { defer((Dead){.view = view_tab[i].view}); view_tab[i].b = NULL; view_tab[i].view = VK_NULL_HANDLE; }
+    b->n_view_slots = 0;
+    b->view_slot_overflow = 0;
 }
 
 VkImageView vk_image_view(TexBackend *b, VkImageViewType type, VkFormat fmt, uint32_t lv0, uint32_t nlv, uint32_t ly0,
                           uint32_t nly, VkComponentMapping sw, VkImageAspectFlags aspect) {
     uint64_t k1 = (uint64_t)type | (uint64_t)fmt << 8 | (uint64_t)lv0 << 40 | (uint64_t)nlv << 48 | (uint64_t)aspect << 56;
     uint64_t k2 = (uint64_t)ly0 | (uint64_t)nly << 16 | (uint64_t)sw.r << 32 | (uint64_t)sw.g << 40 | (uint64_t)sw.b << 48 | (uint64_t)sw.a << 56;
+    if (__builtin_expect(b->last_view != VK_NULL_HANDLE && b->last_vk1 == k1 && b->last_vk2 == k2, 1))
+        return b->last_view;
     uint64_t h = ((uint64_t)(uintptr_t)b * 0x9E3779B97F4A7C15ull) ^ (k1 * 0xC2B2AE3D27D4EB4Full) ^ (k2 * 0x165667B19E3779F9ull);
     uint32_t slot = (uint32_t)(h ^ (h >> 32)) & (VIEW_TAB - 1);
     for (int probe = 0; probe < 16; probe++, slot = (slot + 1) & (VIEW_TAB - 1)) {
         ViewEnt *e = &view_tab[slot];
-        if (e->b == b && e->k1 == k1 && e->k2 == k2) return e->view;
+        if (e->b == b && e->k1 == k1 && e->k2 == k2) {
+            b->last_vk1 = k1; b->last_vk2 = k2; b->last_view = e->view;
+            return e->view;
+        }
         if (!e->b) break;
     }
     extern uint64_t prof_views_created;
@@ -1288,8 +1485,17 @@ VkImageView vk_image_view(TexBackend *b, VkImageViewType type, VkFormat fmt, uin
         return VK_NULL_HANDLE;
     }
     ViewEnt *e = &view_tab[slot];
-    if (e->b) { defer((Dead){.view = e->view}); vk_view_gen++; }  // evict (16 probes taken)
+    if (e->b) {
+        if (e->b->last_view == e->view) e->b->last_view = VK_NULL_HANDLE;
+        defer((Dead){.view = e->view});
+        vk_view_gen++;
+    }  // evict (16 probes taken)
     *e = (ViewEnt){b, k1, k2, v};
+    if (!b->view_slot_overflow) {
+        if (b->n_view_slots < 4) b->view_slots[b->n_view_slots++] = (uint16_t)slot;
+        else b->view_slot_overflow = 1;
+    }
+    b->last_vk1 = k1; b->last_vk2 = k2; b->last_view = v;
     return v;
 }
 
@@ -1350,6 +1556,8 @@ static TexBackend *slice0_copy(TexBackend *b) {
         for (uint32_t l = 0; l < levels; l++) {
             VkImageCopy rg = {.srcSubresource = {b->aspect, l, 0, 1}, .dstSubresource = {b->aspect, l, 0, 1},
                               .extent = {b->width >> l ? b->width >> l : 1, b->height >> l ? b->height >> l : 1, 1}};
+            vk_tex_transition(cb, b, VK_IMAGE_LAYOUT_GENERAL);
+            vk_tex_transition(cb, d, VK_IMAGE_LAYOUT_GENERAL);
             vkCmdCopyImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, d->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
         }
         vk_full_barrier(cb);
@@ -1492,7 +1700,12 @@ static VkCompareOp compare_op(uint32_t f) {
 typedef struct { VkSampler variant[5][XCDE_SAMPLER_BIAS_SLOTS]; } SamplerVariants;
 VkSampler vk_sampler(NvnSamplerDesc *d, bool apply_lod_bias) {
     int filtering = g_settings.graphics.value[GFX_FILTERING];
-    if (filtering < 0 || filtering > 4) filtering = 0;
+    if (__builtin_expect((unsigned)filtering > 4u, 0)) filtering = 0;
+    SamplerVariants *variants = d->backend;
+    if (__builtin_expect(!apply_lod_bias && variants != NULL, 1)) {
+        VkSampler s = variants->variant[filtering][0];
+        if (__builtin_expect(s != VK_NULL_HANDLE, 1)) return s;
+    }
     uint32_t mf = d->min_filter;
     float lod_bias = 0.0f;
     int bias_slot = 0;
@@ -1501,7 +1714,6 @@ VkSampler vk_sampler(NvnSamplerDesc *d, bool apply_lod_bias) {
                                              tmp_lod_bias(), tmp_lod_bias_forced(),
                                              g_settings.upscale_quality, &lod_bias);
     }
-    SamplerVariants *variants = d->backend;
     if (variants && variants->variant[filtering][bias_slot]) return variants->variant[filtering][bias_slot];
     VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     si.magFilter = d->mag_filter == 1 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
@@ -1642,6 +1854,8 @@ bool vk_tex_add_storage(NvnTexture *t, VkCommandBuffer cb) {
         rg[n++] = (VkImageCopy){.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, 0, b->layers}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, 0, b->layers},
                                 .extent = {level_w(b, lv), level_h(b, lv), d ? d : 1}};
     }
+    vk_tex_transition(cb, &old, VK_IMAGE_LAYOUT_GENERAL);
+    vk_tex_transition(cb, b, VK_IMAGE_LAYOUT_GENERAL);
     vkCmdCopyImage(cb, old.image, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL, n, rg);
     vkCmdPipelineBarrier2(cb, &di);
     defer((Dead){.img = old.image, .mem = old.mem});
@@ -1683,6 +1897,8 @@ bool vk_tex_add_feedback(NvnTexture *t, VkCommandBuffer cb) {
         rg[n++] = (VkImageCopy){.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, 0, b->layers}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, 0, b->layers},
                                 .extent = {level_w(b, lv), level_h(b, lv), d ? d : 1}};
     }
+    vk_tex_transition(cb, &old, VK_IMAGE_LAYOUT_GENERAL);
+    vk_tex_transition(cb, b, VK_IMAGE_LAYOUT_GENERAL);
     vkCmdCopyImage(cb, old.image, VK_IMAGE_LAYOUT_GENERAL, b->image, VK_IMAGE_LAYOUT_GENERAL, n, rg);
     vkCmdPipelineBarrier2(cb, &di);
     defer((Dead){.img = old.image, .mem = old.mem});

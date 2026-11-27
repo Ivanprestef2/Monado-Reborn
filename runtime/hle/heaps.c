@@ -115,11 +115,15 @@ HLE_FUNC("_ZN2nn4lmem15DestroyUnitHeapEPNS0_6detail8HeapHeadE", heap_destroy_uni
     pthread_mutex_unlock(&g_unit_lock);
 }
 
+// [XCDE] Perf: per-allocation NULL-logging shims bounce every guest allocation through HLE -> rt_dispatch;
+// compile them in only when debugging OOMs (-DXCDE_HEAP_ALLOC_LOG).
+#ifdef XCDE_HEAP_ALLOC_LOG
 HLE_FUNC("_ZN2nn4lmem20AllocateFromUnitHeapEPNS0_6detail8HeapHeadE", heap_alloc_unit) {
     uint64_t lr = c->x[30], head = c->x[0];
     CALL("_ZN2nn4lmem20AllocateFromUnitHeapEPNS0_6detail8HeapHeadE");
     if (!c->x[0]) fail_once("unit heap allocation", lr, head);
 }
+#endif
 
 // nn::lmem::CreateFrameHeap(void *addr, size_t size, int opt)
 HLE_FUNC("_ZN2nn4lmem15CreateFrameHeapEPvmi", heap_create_frame) {
@@ -129,11 +133,13 @@ HLE_FUNC("_ZN2nn4lmem15CreateFrameHeapEPvmi", heap_create_frame) {
         LOG("[heaps] frame heap %#llx bytes from lr %llx\n", (unsigned long long)size, (unsigned long long)lr);
 }
 
+#ifdef XCDE_HEAP_ALLOC_LOG
 HLE_FUNC("_ZN2nn4lmem21AllocateFromFrameHeapEPNS0_6detail8HeapHeadEmi", heap_alloc_frame) {
     uint64_t lr = c->x[30], size = c->x[1];
     CALL("_ZN2nn4lmem21AllocateFromFrameHeapEPNS0_6detail8HeapHeadEmi");
     if (!c->x[0]) fail_once("frame heap allocation", lr, size);
 }
+#endif
 
 // nn::mem::StandardAllocator::Initialize(void *addr, size_t size[, bool])
 HLE_FUNC("_ZN2nn3mem17StandardAllocator10InitializeEPvm", heap_std_init) {
@@ -150,6 +156,7 @@ HLE_FUNC("_ZN2nn3mem17StandardAllocator10InitializeEPvmb", heap_std_init_b) {
         LOG("[heaps] standard allocator %#llx bytes (b) from lr %llx\n", (unsigned long long)size, (unsigned long long)lr);
 }
 
+#ifdef XCDE_HEAP_ALLOC_LOG
 HLE_FUNC("_ZN2nn3mem17StandardAllocator8AllocateEm", heap_std_alloc) {
     uint64_t lr = c->x[30], size = c->x[1];
     CALL("_ZN2nn3mem17StandardAllocator8AllocateEm");
@@ -161,3 +168,4 @@ HLE_FUNC("_ZN2nn3mem17StandardAllocator8AllocateEmm", heap_std_alloc_a) {
     CALL("_ZN2nn3mem17StandardAllocator8AllocateEmm");
     if (!c->x[0] && size) fail_once("standard allocation (aligned)", lr, size);
 }
+#endif

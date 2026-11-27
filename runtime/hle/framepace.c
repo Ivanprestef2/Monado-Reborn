@@ -179,7 +179,11 @@ static bool present_pace_enabled(void) {
 }
 
 static void pace_sleep_until(uint64_t wake, uint64_t now, bool bg_cap) {
-    const uint64_t spin_margin_ns = bg_cap ? 2000000ull : 1000000ull;  // sleep until 1.0 ms before deadline, then spin for sub-50 us precision
+#ifdef _WIN32
+    const uint64_t spin_margin_ns = bg_cap ? 2000000ull : 1000000ull;  // Windows timer jitter ~0.5-1 ms
+#else
+    const uint64_t spin_margin_ns = bg_cap ? 2000000ull : 150000ull;   // Linux clock_nanosleep jitter ~30-80 us
+#endif
     if (wake > now + spin_margin_ns) plat_sleep_until_ns(wake - spin_margin_ns);
     if (!bg_cap) while (plat_now_ns() < wake) early_spin_pause();
 }
@@ -831,7 +835,10 @@ static void menu_clock_update(void) {
     *(volatile float *)(uintptr_t)(ui + 0x70) = (float)dt;
 }
 
+static uint32_t lim_spin_iters;
+
 void xcde_limiter_done(void) {
+    lim_spin_iters = 0;
     xcde_frame_clock_step(&xcde_clock, xcde_frame_now_ns());
     fvalfind();
     floatfind();
@@ -858,20 +865,43 @@ void xcde_limiter_done(void) {
 }
 
 void xcde_limiter_spin(void) {
+    uint32_t it = ++lim_spin_iters;
     static int on = -1;
     if (on < 0) { const char *e = ENV("XCDE_LIMITER_SLEEP"); on = (!e || atoi(e) != 0) && !diag_deterministic(); }
-    if (!on || early_limiter_active() || lim_n < 8 || !lim_last) return;
-    if (lim_turns_since_sleep >= 0) lim_turns_since_sleep++;
-    uint64_t lo = ~0ull, hi = 0;
-    for (int i = 0; i < 8; i++) { if (lim_iv[i] < lo) lo = lim_iv[i]; if (lim_iv[i] > hi) hi = lim_iv[i]; }
-    if (hi - lo > 3000000) return;  // pacing not steady: leave it to the game
-    uint64_t wake = lim_last + lo - 1500000, now = plat_now_ns();
-    if (now >= wake) return;
-    if (wake - now > 2000000) wake = now + 2000000;  // short naps: the loop re-checks in between
-    static int logged;
-    if (!logged++) LOG("[limiter] frame interval %.2f ms: sleeping until 1.5 ms before each frame end\n", lo / 1e6);
-    plat_sleep_until_ns(wake);
-    g_limiter_slept_ns += plat_now_ns() - now;
-    lim_turns_since_sleep = 0;
+    if (on && !early_limiter_active() && lim_n >= 8 && lim_last) {
+        if (lim_turns_since_sleep >= 0) lim_turns_since_sleep++;
+        uint64_t lo = ~0ull, hi = 0;
+        for (int i = 0; i < 8; i++) { if (lim_iv[i] < lo) lo = lim_iv[i]; if (lim_iv[i] > hi) hi = lim_iv[i]; }
+        if (hi - lo <= 8000000) {
+#ifdef _WIN32
+            const uint64_t wake_margin = 1500000ull;
+#else
+            const uint64_t wake_margin = 300000ull;
+#endif
+            if (lo > wake_margin) {
+                uint64_t wake = lim_last + lo - wake_margin, now = plat_now_ns();
+                if (now < wake) {
+                    if (wake - now > 2000000) wake = now + 2000000;  // short naps: the loop re-checks in between
+                    static int logged;
+                    if (!logged++) LOG("[limiter] frame interval %.2f ms: sleeping until %.2f ms before each frame end\n", lo / 1e6, wake_margin / 1e6);
+                    plat_sleep_until_ns(wake);
+                    g_limiter_slept_ns += plat_now_ns() - now;
+                    lim_turns_since_sleep = 0;
+                    return;
+                }
+            }
+        }
+    }
+    // [XCDE] Wave 18b: in real-time mode, prevent guest t80 from burning 100% of a CPU core when waiting on
+    // the render thread / early-limiter. In deterministic mode the virtual clock advances per GetSystemTick
+    // poll, so never sleep inside xcde_limiter_spin() when diag_deterministic() is active.
+    if (diag_deterministic()) return;
+    if (it <= 16) {
+        early_spin_pause();
+    } else if (it <= 32) {
+        for (int k = 0; k < 8; k++) early_spin_pause();
+    } else {
+        plat_sleep_until_ns(plat_now_ns() + 50000ull);
+    }
 }
 

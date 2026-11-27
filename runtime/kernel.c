@@ -702,7 +702,14 @@ static int prof_svc = -1;
 static void svc_entry(Cpu *c, uint32_t imm, uint64_t pc);
 void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) {
     if (diag_usage_on()) diag_use_svc(imm);  // [XCDE] T034
-    if (t_cur) { t_cur->last_svc = imm; t_cur->last_lr = c->x[30]; t_cur->last_svc_ns = plat_now_ns(); }  // [XCDE] watchdog
+    if (t_cur) {
+        t_cur->last_svc = imm;
+        t_cur->last_lr = c->x[30];
+        // [XCDE] Perf: only timestamp blocking SVCs or every 64th SVC instead of calling plat_now_ns() on every hot SVC.
+        static __thread uint32_t t_svc_tick;
+        if (imm == 0x18 || imm == 0x1c || imm == 0x34 || imm == 0x0b || (++t_svc_tick & 63u) == 0)
+            t_cur->last_svc_ns = plat_now_ns();
+    }  // [XCDE] watchdog
     if (g_det && t_cur) {  // [XCDE] T122: digest of the guest's SVC stream (diag.c logs it per frame: XCDE_DET_DIGEST=1)
         uint64_t v[5] = {t_cur->id, imm, c->x[0], c->x[1], c->x[30]};
         for (int i = 0; i < 5; i++) g_det_digest = (g_det_digest ^ v[i]) * 0x100000001b3ull;

@@ -324,6 +324,14 @@ class Lifter:
             if crn == 3 and op1 == 3 and rt == 31:  # barriers
                 if op2 == 2:
                     return Insn('op', 'c->excl_addr = ~0ull;')
+                # [XCDE] Perf: decode DMB/DSB access qualifier (crm & 3): LD -> acquire, ST -> release
+                # (zero-instruction compiler barriers on x86-64 TSO instead of mfence).
+                if op2 in (4, 5):
+                    qual = crm & 3
+                    if qual == 1:
+                        return Insn('op', '__atomic_thread_fence(__ATOMIC_ACQUIRE);')
+                    if qual == 2:
+                        return Insn('op', '__atomic_thread_fence(__ATOMIC_RELEASE);')
                 return Insn('op', '__atomic_thread_fence(__ATOMIC_SEQ_CST);')
             raise Unsupported(f'pstate/system {w:08x}')
         if op0 == 1:  # SYS

@@ -140,7 +140,7 @@ int main(void) {
         CHECK(fs && fs->msl && vs && vs->msl);
         if (fs && fs->msl) {
             CHECK(strstr(fs->msl, "float h2f(uint h) { return unpackHalf2x16(h).x; }") != NULL);
-            CHECK(strstr(fs->msl, "uint p = packHalf2x16(r);") != NULL);
+            CHECK(strstr(fs->msl, "uint hpack0(vec2 r) { return packHalf2x16(r); }") != NULL);
             check_spirv(comp, fs->msl, "fp16_hw_fs");
         }
         if (vs && vs->msl) CHECK(strstr(vs->msl, "if (e == 0u)") != NULL);
@@ -200,7 +200,7 @@ int main(void) {
         CHECK(fs && fs->msl && vs && vs->msl);
         if (fs && fs->msl) {
             CHECK(strstr(fs->msl, "GL_EXT_shader_explicit_arithmetic_types_float16") != NULL);
-            CHECK(strstr(fs->msl, "f16vec2 hx(") != NULL);
+            CHECK(strstr(fs->msl, "f16vec2 hx0(") != NULL);
             CHECK(strstr(fs->msl, "f16vec2 hx_ =") != NULL);
             check_spirv(comp, fs->msl, "fp16_native_fs");
         }

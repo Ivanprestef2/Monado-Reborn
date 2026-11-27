@@ -142,6 +142,12 @@ typedef struct TexBackend {
     bool has_feedback;    // [XCDE] lazy VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT (preserves DCC on non-feedback RTs)
     bool feedback_failed;
     uint8_t up_changes;   // [XCDE] Issue #261: content changes after initial upload (3+ promotes to dynamic)
+    VkImageLayout cur_layout;  // [XCDE] Perf: persistent image layout (unlocks RADV DCC/HTILE across passes)
+    uint64_t last_vk1, last_vk2;  // [XCDE] Wave 11: 1-entry inline view cache (avoids 512KB view_tab lookup)
+    VkImageView last_view;
+    uint16_t view_slots[4];       // [XCDE] Wave 14: O(1) views_forget slot tracking
+    uint8_t n_view_slots, view_slot_overflow;
+    uint64_t total_size;          // [XCDE] Wave 18: cached tegra_total_size(&t->layout)
 } TexBackend;
 
 TexBackend *vk_tex(NvnTexture *t, bool for_render);  // backend image (uploads CPU contents unless for_render)
@@ -168,6 +174,9 @@ VkImageView vk_dummy_view(int textype);
 VkSampler vk_sampler(NvnSamplerDesc *d, bool apply_lod_bias);
 VkSampler vk_default_sampler(bool linear);
 void vk_image_init_layout(VkCommandBuffer cb, VkImage img, VkImageAspectFlags aspect);
+bool vk_optimal_layouts_on(void);
+void vk_tex_transition_batch(VkCommandBuffer cb, TexBackend **bs, const VkImageLayout *wants, uint32_t count);
+void vk_tex_transition(VkCommandBuffer cb, TexBackend *b, VkImageLayout want);
 // Destruction once every submission that may use the object has completed.
 void vk_defer_image(VkImage img, VmaAllocation mem);
 void vk_defer_buffer(VkBuffer buf, VmaAllocation mem);

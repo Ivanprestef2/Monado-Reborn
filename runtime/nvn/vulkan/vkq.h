@@ -86,6 +86,9 @@ void q_checkpoint(PFN_vkCmdSetCheckpointNV fn, VkCommandBuffer cb, const void *m
 void vkq_stats(char *, size_t);
 void q_vkCmdBindVertexBuffers2(VkCommandBuffer, uint32_t, uint32_t, const VkBuffer *, const VkDeviceSize *, const VkDeviceSize *, const VkDeviceSize *);
 void q_vkCmdPushDescriptorSetKHR(PFN_vkCmdPushDescriptorSetKHR, VkCommandBuffer, VkPipelineBindPoint, VkPipelineLayout, uint32_t, uint32_t, const VkWriteDescriptorSet *);
+void q_vkCmdPushDescriptorSetCompact(PFN_vkCmdPushDescriptorSetKHR, VkCommandBuffer, VkPipelineBindPoint, VkPipelineLayout, uint32_t, uint32_t,
+                                     const uint32_t *bindings, const VkDescriptorType *types,
+                                     const VkDescriptorBufferInfo *bi, const VkDescriptorImageInfo *ii);
 #ifdef __cplusplus
 }
 #endif
@@ -142,6 +145,22 @@ static inline void vkq_stats(char *out, size_t n) { if (n) out[0] = 0; }
 static inline void q_vkCmdPushDescriptorSetKHR(PFN_vkCmdPushDescriptorSetKHR fn, VkCommandBuffer cb,
                                                VkPipelineBindPoint bp, VkPipelineLayout layout,
                                                uint32_t set, uint32_t n, const VkWriteDescriptorSet *w) {
+    fn(cb, bp, layout, set, n, w);
+}
+static inline void q_vkCmdPushDescriptorSetCompact(PFN_vkCmdPushDescriptorSetKHR fn, VkCommandBuffer cb,
+                                                   VkPipelineBindPoint bp, VkPipelineLayout layout,
+                                                   uint32_t set, uint32_t n,
+                                                   const uint32_t *bindings, const VkDescriptorType *types,
+                                                   const VkDescriptorBufferInfo *bi, const VkDescriptorImageInfo *ii) {
+    VkWriteDescriptorSet w[128];
+    if (n > 128) n = 128;
+    for (uint32_t i = 0; i < n; i++) {
+        VkDescriptorType bt = types[i];
+        int is_img = (bt == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || bt == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+        w[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = bindings[i],
+                                      .descriptorCount = 1, .descriptorType = bt,
+                                      .pImageInfo = is_img ? &ii[i] : NULL, .pBufferInfo = is_img ? NULL : &bi[i]};
+    }
     fn(cb, bp, layout, set, n, w);
 }
 #endif

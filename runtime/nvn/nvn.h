@@ -33,6 +33,10 @@ typedef struct NvnTexture {
     void *backend;  // renderer-side texture
     uint64_t debug_id;
     char label[64];
+    // [XCDE] Perf: track registered texture pool slots for O(1) nvn_pools_forget_texture.
+    void *pool_slots[4];
+    uint8_t n_pool_slots;
+    uint8_t pool_slot_overflow;
 } NvnTexture;
 
 typedef struct {
@@ -53,6 +57,7 @@ typedef struct {
     NvnTexture *tex;
     NvnTextureView view;
     bool has_view;
+    uint8_t tex_uint_state;  // [XCDE] Perf: 0=unknown, 1=normal, 2=uint/stencil (fits in existing padding)
     uint32_t reg_frame;      // [XCDE] T240 glitch watch: the presented frame it was last registered in
     uint32_t prev_target;    // and the target of the texture it held before (0xff: none)
 } NvnTexEntry;

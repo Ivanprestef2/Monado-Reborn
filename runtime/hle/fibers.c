@@ -12,6 +12,7 @@
 // its guest thread block (tpidr/tpidrro/thread) is handed over from the switching thread on every switch (ssbu #43);
 // the per-thread "current fiber" is read through non-inlined accessors, because a compiler may keep a thread-local
 // address across a switch that moves the code to another thread.
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
@@ -154,8 +155,9 @@ void hle__ZN2nn2os13SwitchToFiberEPNS0_9FiberTypeE(Cpu *c) {
     // its thread block into our record (or, for the thread's own context, nothing changed).
     cur_set(self);
     if (self) {
-        HFiber *me = find(self);
-        if (me) take_over(c, me);
+        // [XCDE] Perf: inside a guest fiber, `c` is `&me->cpu`, avoiding a second global lock + hash lookup on resume.
+        HFiber *me = (HFiber *)((char *)c - offsetof(HFiber, cpu));
+        take_over(c, me);
     }
 }
 

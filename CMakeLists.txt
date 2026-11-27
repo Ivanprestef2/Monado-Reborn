@@ -174,7 +174,7 @@ if(WIN32)
       runtime/nvn/vulkan/exec.c runtime/nvn/vulkan/textures.c runtime/nvn/vulkan/vkq.c
       runtime/nvn/vulkan/device.c runtime/nvn/vulkan/post.c runtime/nvn/vulkan/temporal.c
       runtime/nvn/cmdbuf.c runtime/nvn/objects.c
-      runtime/kernel.c runtime/platform/windows.c runtime/hle/collision_bvh.c
+      runtime/kernel.c runtime/dispatch.c runtime/platform/windows.c runtime/hle/collision_bvh.c
       PROPERTIES COMPILE_OPTIONS -O2)
 
   add_library(monado_ui OBJECT ${UI_SOURCES})
@@ -260,16 +260,33 @@ else()
   if(VMA_INCLUDE_DIR)
     list(APPEND LINUX_INCLUDES "${VMA_INCLUDE_DIR}")
   endif()
-  set(GAME_C_FLAGS ${LINUX_FLAGS})
+  option(MONADO_LOCAL_ISA "Enable safe local host ISA flags (-mfma -mbmi -mbmi2 -mlzcnt) for local builds" ON)
+  option(MONADO_FAST_FP "Skip per-instruction FPCR/NaN fixup checks in lifted FP/SIMD ops" ON)
+  option(MONADO_THINLTO "Enable ThinLTO (-flto=thin + lld) for cross-chunk PGO inlining" OFF)
+  set(LINUX_GAME_EXTRA)
+  if(MONADO_LOCAL_ISA AND NOT MONADO_RELEASE)
+    list(APPEND LINUX_GAME_EXTRA -mfma -mbmi -mbmi2 -mlzcnt)
+  endif()
+  if(MONADO_FAST_FP)
+    list(APPEND LINUX_GAME_EXTRA -DMONADO_FAST_FP)
+  endif()
+  if(MONADO_THINLTO)
+    list(APPEND LINUX_GAME_EXTRA -flto=thin)
+  endif()
+  set(GAME_C_FLAGS ${LINUX_FLAGS} ${LINUX_GAME_EXTRA})
 
   add_library(monado_rt OBJECT ${RT_SOURCES})
   target_compile_options(monado_rt PRIVATE ${LINUX_BASE_FLAGS} ${RT_WARN_FLAGS})
   target_include_directories(monado_rt PRIVATE ${LINUX_INCLUDES} third_party/smaa/Textures)
   target_compile_definitions(monado_rt PRIVATE "GAMELIB_ID=\"${GAMELIB_ID}\"" XCDE_GFX)
   target_link_libraries(monado_rt PRIVATE PkgConfig::DEPS)
-  # [XCDE] T-RUNTIME-O2: the two Vulkan units that dominate the render thread's CPU time + native collision BVH
-  set_source_files_properties(runtime/nvn/vulkan/exec.c runtime/nvn/vulkan/textures.c runtime/hle/collision_bvh.c
-                              PROPERTIES COMPILE_OPTIONS -O2)
+  # [XCDE] T-RUNTIME-O2: match Windows hot Vulkan/kernel/platform/collision -O2 list on Linux
+  set_source_files_properties(
+      runtime/nvn/vulkan/exec.c runtime/nvn/vulkan/textures.c runtime/nvn/vulkan/vkq.c
+      runtime/nvn/vulkan/device.c runtime/nvn/vulkan/post.c runtime/nvn/vulkan/temporal.c
+      runtime/nvn/cmdbuf.c runtime/nvn/objects.c
+      runtime/kernel.c runtime/dispatch.c runtime/platform/linux.c runtime/hle/collision_bvh.c
+      PROPERTIES COMPILE_OPTIONS -O2)
 
   add_library(monado_ui OBJECT ${UI_SOURCES} runtime/nvn/vulkan/dlss.cpp runtime/nvn/vulkan/vma.cpp)
   target_compile_options(monado_ui PRIVATE ${LINUX_FLAGS} -std=c++17)
@@ -281,6 +298,9 @@ else()
   set(GAME_LINK_LIBS PkgConfig::DEPS Threads::Threads ${CMAKE_DL_LIBS} m)
   find_package(Threads REQUIRED)
   set(GAME_LINK_OPTIONS -rdynamic)
+  if(MONADO_THINLTO)
+    list(APPEND GAME_LINK_OPTIONS -flto=thin -fuse-ld=lld)
+  endif()
   set(GAME_NAME monado)
   set(GAME_OBJECTS $<TARGET_OBJECTS:monado_rt> $<TARGET_OBJECTS:monado_ui>)
 

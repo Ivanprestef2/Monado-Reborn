@@ -189,7 +189,6 @@ static const char monado_gtao_composite_glsl[] =
     "#version 460\n"
     "layout(std140, set=1, binding=3) uniform CB3 { uvec4 cb3[16]; };\n"
     "layout(std140, set=1, binding=18) uniform RScale { vec4 rscale[129]; };\n"
-    "layout(std140, set=1, binding=19) uniform Tint { vec4 ltint[2]; };\n"
     "layout(set=1, binding=32) uniform sampler2D t0;\n"  // gTEtc
     "layout(set=1, binding=33) uniform sampler2D t1;\n"  // gTAO
     "layout(location=0) out vec4 c0;\n"
@@ -210,6 +209,4 @@ static const char monado_gtao_composite_glsl[] =
     "  out_ao = s * str - str + 1.0;\n"
     " }\n"
     " c0 = vec4(out_ao);\n"
-    " if (ltint[0].w > 0.0) { vec3 g = c0.rgb; float l = dot(g, vec3(0.299, 0.587, 0.114));\n"
-    "  c0.rgb = mix(g, ltint[0].rgb * pow(l, ltint[1].w) + ltint[1].rgb * l, ltint[0].w); }\n"
     "}\n";
