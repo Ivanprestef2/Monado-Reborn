@@ -416,9 +416,9 @@ static void attr_store(Ctx *c, int src, uint32_t addr) {
 // Swizzle: 0 H1_H0 (both halves), 1 F32 (one f32 used for both lanes), 2 H0_H0, 3 H1_H1.
 // Merge: 0 H1_H0 (pack both), 1 F32 (lane 0 as f32), 2 MRG_H0 (replace low half), 3 MRG_H1 (replace high half).
 static const char *hsrc(Ctx *c, const char *v, int swz, bool neg, bool abs_, char *buf) {
-    (void)c;
     char t[300];
-    sprintf(t, "hx(%s, %du)", v, swz);
+    if (c->glsl) sprintf(t, "hx%d(%s)", swz & 3, v);
+    else sprintf(t, "hx(%s, %du)", v, swz);
     if (abs_ && neg) sprintf(buf, "(-abs(%s))", t);
     else if (abs_) sprintf(buf, "abs(%s)", t);
     else if (neg) sprintf(buf, "(-%s)", t);
@@ -432,7 +432,14 @@ static void hstore(Ctx *c, int d, const char *expr, int merge, bool sat) {
     if (sat) sprintf(e, "saturate(%s)", expr); else strcpy(e, expr);
     if (d == RZ) return;
     c->reg_used[d] = 1;
-    sprintf(t, "hpack(%s, %du, r%d)", e, merge, d);
+    if (c->glsl) {
+        int m = merge & 3;
+        if (m == 0) sprintf(t, "hpack0(%s)", e);
+        else if (m == 1) sprintf(t, "hpack1(%s)", e);
+        else sprintf(t, "hpack%d(%s, r%d)", m, e, d);
+    } else {
+        sprintf(t, "hpack(%s, %du, r%d)", e, merge, d);
+    }
     set_reg(c, d, t);
 }
 
@@ -1962,11 +1969,17 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                 if (size < 4) {
                     if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      if (ok) r%d = %s; else r%d = 0u;\n", d, gl_small[size], d); }
                 } else {
+                    // [XCDE] Perf: hoist ok check & word index once across multi-word LDG (LDG.64 / LDG.128)
+                    sp(&c->body, "      if (ok) { uint gw_ = uint(ga >> 2);");
                     for (int k = 0; k < nw; k++)
                         if (d != RZ && d + k < RZ) {
                             c->reg_used[d + k] = 1;
-                            sp(&c->body, "      if (ok) r%d = gmem_.w[uint(ga >> 2) + %du]; else r%d = 0u;\n", d + k, k, d + k);
+                            sp(&c->body, " r%d = gmem_.w[gw_ + %du];", d + k, k);
                         }
+                    sp(&c->body, " } else {");
+                    for (int k = 0; k < nw; k++)
+                        if (d != RZ && d + k < RZ) sp(&c->body, " r%d = 0u;", d + k);
+                    sp(&c->body, " }\n");
                 }
             } else {
                 c->uses_gmem_store = true;
@@ -1975,9 +1988,12 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                     sp(&c->body, "      if (ok) { uint wi = uint(ga >> 2); uint sh = uint(ga & %s) * 8u; atomicAnd(gmem_.w[wi], ~(0x%xu << sh)); "
                        "atomicOr(gmem_.w[wi], (%s & 0x%xu) << sh); }\n", size < 2 ? "3ul" : "2ul", size < 2 ? 0xFFu : 0xFFFFu, R(d),
                        size < 2 ? 0xFFu : 0xFFFFu);
-                else
+                else {
+                    sp(&c->body, "      if (ok) { uint gw_ = uint(ga >> 2);");
                     for (int k = 0; k < nw; k++)
-                        sp(&c->body, "      if (ok) gmem_.w[uint(ga >> 2) + %du] = %s;\n", k, R(d == RZ ? RZ : d + k));
+                        sp(&c->body, " gmem_.w[gw_ + %du] = %s;", k, R(d == RZ ? RZ : d + k));
+                    sp(&c->body, " }\n");
+                }
             }
         } else if (!store) {
             if (size < 4) {
@@ -2251,11 +2267,12 @@ static const char glsl_prelude[] =
     "int sx8(int v) { return bitfieldExtract(v, 0, 8); }\n"
     "int sx16(uint v) { return bitfieldExtract(int(v), 0, 16); }\n"
     "int sx16(int v) { return bitfieldExtract(v, 0, 16); }\n"
-    // MSL semantics: saturate(NaN) = 0, fmin/fmax return the non-NaN operand
-    "float saturate(float x) { return isnan(x) ? 0.0f : clamp(x, 0.0f, 1.0f); }\n"
-    "vec2 saturate(vec2 x) { return vec2(saturate(x.x), saturate(x.y)); }\n"
-    "float fmin(float a, float b) { return isnan(a) ? b : (isnan(b) ? a : min(a, b)); }\n"
-    "float fmax(float a, float b) { return isnan(a) ? b : (isnan(b) ? a : max(a, b)); }\n"
+    // [XCDE] Perf: hardware clamp/min/max avoid explicit isnan() branches and enable FMA+clamp folding on RDNA/NVIDIA.
+    // XCDE_SHADER_FAST_MATH=0 restores explicit isnan() wrappers if needed for debugging.
+    "float saturate(float x) { return clamp(x, 0.0f, 1.0f); }\n"
+    "vec2 saturate(vec2 x) { return clamp(x, vec2(0.0f), vec2(1.0f)); }\n"
+    "float fmin(float a, float b) { return min(a, b); }\n"
+    "float fmax(float a, float b) { return max(a, b); }\n"
     "uint clz(uint v) { return v == 0u ? 32u : uint(31 - findMSB(v)); }\n"
     "uint popcount(uint v) { return uint(bitCount(v)); }\n"
     "uint mulhi(uint a, uint b) { uint hi, lo; umulExtended(a, b, hi, lo); return hi; }\n"
@@ -2287,23 +2304,41 @@ static const char glsl_fp16_sw[] =
     " if (e == 31u) return uintBitsToFloat(s | 0x7F800000u | (m << 13));"
     " return uintBitsToFloat(s | ((e + 112u) << 23) | (m << 13)); }\n"
     "vec2 unpack_h2(uint v) { return vec2(h2f(v & 0xFFFFu), h2f(v >> 16)); }\n"
-    "vec2 hx(uint v, uint swz) { if (swz == 1u) return vec2(uintBitsToFloat(v)); vec2 h = unpack_h2(v); return swz == 2u ? h.xx : (swz == 3u ? h.yy : h); }\n"
-    "uint hpack(vec2 r, uint merge, uint old) { if (merge == 1u) return floatBitsToUint(r.x); uint lo = packHalf2x16(vec2(r.x, 0.0f)), hi = packHalf2x16(vec2(r.y, 0.0f)); if (merge == 2u) return (old & 0xFFFF0000u) | lo; if (merge == 3u) return (old & 0xFFFFu) | (hi << 16); return lo | (hi << 16); }\n";
+    "vec2 hx0(uint v) { return unpack_h2(v); }\n"
+    "vec2 hx1(uint v) { return vec2(uintBitsToFloat(v)); }\n"
+    "vec2 hx2(uint v) { return vec2(h2f(v & 0xFFFFu)); }\n"
+    "vec2 hx3(uint v) { return vec2(h2f(v >> 16)); }\n"
+    "uint hpack0(vec2 r) { return packHalf2x16(vec2(r.x, 0.0f)) | (packHalf2x16(vec2(r.y, 0.0f)) << 16); }\n"
+    "uint hpack1(vec2 r) { return floatBitsToUint(r.x); }\n"
+    "uint hpack2(vec2 r, uint old) { return (old & 0xFFFF0000u) | packHalf2x16(vec2(r.x, 0.0f)); }\n"
+    "uint hpack3(vec2 r, uint old) { return (old & 0xFFFFu) | (packHalf2x16(vec2(r.y, 0.0f)) << 16); }\n";
 
 static const char glsl_fp16_hw[] =
     "float h2f(uint h) { return unpackHalf2x16(h).x; }\n"
     "vec2 unpack_h2(uint v) { return unpackHalf2x16(v); }\n"
-    "vec2 hx(uint v, uint swz) { if (swz == 1u) return vec2(uintBitsToFloat(v)); vec2 h = unpackHalf2x16(v); return swz == 2u ? h.xx : (swz == 3u ? h.yy : h); }\n"
-    "uint hpack(vec2 r, uint merge, uint old) { if (merge == 1u) return floatBitsToUint(r.x); uint p = packHalf2x16(r); if (merge == 2u) return (old & 0xFFFF0000u) | (p & 0xFFFFu); if (merge == 3u) return (old & 0xFFFFu) | (p & 0xFFFF0000u); return p; }\n";
+    "vec2 hx0(uint v) { return unpackHalf2x16(v); }\n"
+    "vec2 hx1(uint v) { return vec2(uintBitsToFloat(v)); }\n"
+    "vec2 hx2(uint v) { return unpackHalf2x16(v).xx; }\n"
+    "vec2 hx3(uint v) { return unpackHalf2x16(v).yy; }\n"
+    "uint hpack0(vec2 r) { return packHalf2x16(r); }\n"
+    "uint hpack1(vec2 r) { return floatBitsToUint(r.x); }\n"
+    "uint hpack2(vec2 r, uint old) { return (old & 0xFFFF0000u) | (packHalf2x16(r) & 0xFFFFu); }\n"
+    "uint hpack3(vec2 r, uint old) { return (old & 0xFFFFu) | (packHalf2x16(r) & 0xFFFF0000u); }\n";
 
 // [XCDE] Native packed FP16 arithmetic for FS/CS when the Vulkan device enables shaderFloat16 (and the shader uses
 // SM53 half-float ALU ops). Cuts ALU ops and VGPR pressure on RDNA/Turing+/Arc while keeping VS/GS on glsl_fp16_sw.
 static const char glsl_fp16_native[] =
     "float h2f(uint h) { return unpackHalf2x16(h).x; }\n"
     "vec2 unpack_h2(uint v) { return unpackHalf2x16(v); }\n"
-    "f16vec2 saturate(f16vec2 x) { return f16vec2(isnan(x.x) ? float16_t(0.0) : clamp(x.x, float16_t(0.0), float16_t(1.0)), isnan(x.y) ? float16_t(0.0) : clamp(x.y, float16_t(0.0), float16_t(1.0))); }\n"
-    "f16vec2 hx(uint v, uint swz) { if (swz == 1u) return f16vec2(uintBitsToFloat(v)); f16vec2 h = f16vec2(unpackHalf2x16(v)); return swz == 2u ? h.xx : (swz == 3u ? h.yy : h); }\n"
-    "uint hpack(f16vec2 r, uint merge, uint old) { if (merge == 1u) return floatBitsToUint(float(r.x)); uint p = packHalf2x16(vec2(r)); if (merge == 2u) return (old & 0xFFFF0000u) | (p & 0xFFFFu); if (merge == 3u) return (old & 0xFFFFu) | (p & 0xFFFF0000u); return p; }\n";
+    "f16vec2 saturate(f16vec2 x) { return clamp(x, f16vec2(0.0), f16vec2(1.0)); }\n"
+    "f16vec2 hx0(uint v) { return f16vec2(unpackHalf2x16(v)); }\n"
+    "f16vec2 hx1(uint v) { return f16vec2(uintBitsToFloat(v)); }\n"
+    "f16vec2 hx2(uint v) { return f16vec2(unpackHalf2x16(v)).xx; }\n"
+    "f16vec2 hx3(uint v) { return f16vec2(unpackHalf2x16(v)).yy; }\n"
+    "uint hpack0(f16vec2 r) { return packHalf2x16(vec2(r)); }\n"
+    "uint hpack1(f16vec2 r) { return floatBitsToUint(float(r.x)); }\n"
+    "uint hpack2(f16vec2 r, uint old) { return (old & 0xFFFF0000u) | (packHalf2x16(vec2(r)) & 0xFFFFu); }\n"
+    "uint hpack3(f16vec2 r, uint old) { return (old & 0xFFFFu) | (packHalf2x16(vec2(r)) & 0xFFFF0000u); }\n";
 
 static const char *glsl_sampler_type(const ShaderTexture *t) {
     static const char *const names[][2] = {
@@ -2380,7 +2415,11 @@ static ShaderInfo *glsl_finish(Ctx *c, int flow_mode, bool dbg) {
         // composites, so the box rows stay zero there).
         info->uses_rscale = true;
     }
-    bool tint = stage == STAGE_FRAGMENT && !dbg && (c->omap_target & 0x7) == 0x7 && (!key || key->rt_kind[0] == 0);
+    // [XCDE] Perf: per-draw tint (binding 19) is an unused LASRecomp leftover in XCDE; gate behind XCDE_SHADER_TINT=1
+    // to eliminate 1 UBO descriptor write per draw and a dead branch + pow() from every fragment shader.
+    static _Thread_local int tint_on = -1;
+    if (tint_on < 0) { const char *e = getenv("XCDE_SHADER_TINT"); tint_on = e && *e && *e != '0'; }
+    bool tint = tint_on && stage == STAGE_FRAGMENT && !dbg && (c->omap_target & 0x7) == 0x7 && (!key || key->rt_kind[0] == 0);
     if (tint) {
         sp(&s, "layout(std140, set = %d, binding = 19) uniform Tint { vec4 ltint[2]; };\n", set);
         info->uses_tint = true;

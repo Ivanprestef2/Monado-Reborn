@@ -6,7 +6,6 @@ static const char monado_bloom_tent_glsl[] =
     "layout(location=0) in vec4 v0;\n"
     "layout(location=0) out vec4 c0;\n"
     "layout(set=1,binding=3,std140) uniform CB3 { uvec4 cb3[16]; };\n"
-    "layout(set=1,binding=19,std140) uniform Tint { vec4 ltint[2]; };\n"
     "layout(set=1,binding=32) uniform sampler2D t0;\n"
     "void main() {\n"
     " vec2 uv=v0.xy, d=abs(uintBitsToFloat(cb3[1].zw));\n"
@@ -16,6 +15,4 @@ static const char monado_bloom_tent_glsl[] =
     " c+=texture(t0,uv+d).rgb+texture(t0,uv-d).rgb\n"
     "   +texture(t0,uv+vec2(d.x,-d.y)).rgb+texture(t0,uv+vec2(-d.x,d.y)).rgb;\n"
     " c0=vec4(c*(1.0/16.0),1.0);\n"
-    " if(ltint[0].w>0.0) { float l=dot(c0.rgb,vec3(0.299,0.587,0.114));\n"
-    "  c0.rgb=mix(c0.rgb,ltint[0].rgb*pow(l,ltint[1].w)+ltint[1].rgb*l,ltint[0].w); }\n"
     "}\n";

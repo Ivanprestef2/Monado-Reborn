@@ -111,7 +111,10 @@ void *hle_alloc(uint64_t size) {
     return (void *)a;
 }
 
+static int g_dispatch_usage;
+
 void dispatch_init(void) {  // (after gamelib_load)
+    g_dispatch_usage = diag_usage_on() ? 1 : 0;
     const GameLibTables *g = gamelib_tables();
     uint64_t nm = *g->main_count, ns = *g->sdk_count;
     tables[0] = (FnTable){g->main_addrs, g->main_fns, nm, g->main_addrs[0], g->main_addrs[nm - 1]};
@@ -133,11 +136,12 @@ GuestFn dispatch_lookup(uint64_t addr) {
     return NULL;
 }
 
-// Small direct-mapped cache in front of the binary search
-#define DCACHE 4096
+// Direct-mapped cache in front of the binary search (16K entries = 256 KB/thread to avoid conflict misses).
+#define DCACHE 16384
 static __thread struct { uint64_t addr; GuestFn fn; } dcache[DCACHE];
 
-static GuestFn dispatch_slow(Cpu *c) {
+// [XCDE] Perf: keep dispatch_slow out-of-line so rt_dispatch's dcache-hit fast path stays leaf/zero-frame.
+__attribute__((noinline, cold)) static GuestFn dispatch_slow(Cpu *c) {
     uint64_t pc = c->pc;
     if (pc >= HLE_BASE && pc < HLE_BASE + HLE_SIZE) {
         rt_unwind_point();  // (HLE calls aren't cached below, so every one passes here: a reboot's safe point)
@@ -169,10 +173,40 @@ static GuestFn dispatch_slow(Cpu *c) {
 }
 
 // Always tail-calls, so chains of indirect jumps don't grow the host stack.
+// [XCDE] Wave 19: direct HLE fast path before probing the 256 KB dcache (NVN API calls are HLE stubs
+// and previously missed dcache + called cold dispatch_slow on every single draw/bind call).
 void rt_dispatch(Cpu *c) {
-    unsigned h = (unsigned)(c->pc >> 2) & (DCACHE - 1);
-    GuestFn f = dcache[h].addr == c->pc ? dcache[h].fn : dispatch_slow(c);
+    uint64_t pc = c->pc;
+    uint64_t hle_off = pc - HLE_BASE;
+    if (hle_off < (uint64_t)hle_count * 16ull) {
+        if (__builtin_expect(!g_rt_unwind && !g_dispatch_usage, 1)) {
+            GuestFn f = hle_slots[hle_off >> 4].fn;
+            if (__builtin_expect(f != NULL, 1)) {
+                __attribute__((musttail)) return f(c);
+            }
+        }
+        GuestFn f = dispatch_slow(c);
+        __attribute__((musttail)) return f(c);
+    }
+    unsigned h = (unsigned)(pc >> 2) & (DCACHE - 1);
+    GuestFn f = __builtin_expect(dcache[h].addr == pc, 1) ? dcache[h].fn : dispatch_slow(c);
     __attribute__((musttail)) return f(c);
+}
+
+GuestFn rt_resolve_fn(Cpu *c, uint64_t pc) {
+    uint64_t hle_off = pc - HLE_BASE;
+    if (hle_off < (uint64_t)hle_count * 16ull) {
+        if (__builtin_expect(!g_rt_unwind && !g_dispatch_usage, 1)) {
+            GuestFn f = hle_slots[hle_off >> 4].fn;
+            if (__builtin_expect(f != NULL, 1)) return f;
+        }
+        c->pc = pc;
+        return dispatch_slow(c);
+    }
+    unsigned h = (unsigned)(pc >> 2) & (DCACHE - 1);
+    if (__builtin_expect(dcache[h].addr == pc, 1)) return dcache[h].fn;
+    c->pc = pc;
+    return dispatch_slow(c);
 }
 
 void guest_call(Cpu *c, uint64_t addr) {

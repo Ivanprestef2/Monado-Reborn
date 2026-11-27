@@ -589,13 +589,39 @@ RT_ON_RESET(desc_pools_reset) { memset(g_texture_pools, 0, sizeof g_texture_pool
 // the shader variant) - read it. PokeZ-ARecomp 1977d86 crashed on the same. Called where the texture is freed (the
 // render thread with the async worker: after the work queued before the finalize); a slot the game re-registered
 // meanwhile is left alone (compare-exchange).
+static inline void nvn_texture_note_pool_slot(NvnTexture *t, NvnTexEntry *slot) {
+    if (!t || __atomic_load_n(&t->pool_slot_overflow, __ATOMIC_RELAXED)) return;
+    uint8_t n = __atomic_load_n(&t->n_pool_slots, __ATOMIC_RELAXED);
+    for (uint8_t i = 0; i < n; i++)
+        if (t->pool_slots[i] == slot) return;
+    if (n < 4) {
+        t->pool_slots[n] = slot;
+        __atomic_store_n(&t->n_pool_slots, (uint8_t)(n + 1), __ATOMIC_RELEASE);
+    } else {
+        __atomic_store_n(&t->pool_slot_overflow, 1, __ATOMIC_RELEASE);
+    }
+}
+
 void nvn_pools_forget_texture(NvnTexture *t) {
+    if (!__atomic_load_n(&t->pool_slot_overflow, __ATOMIC_ACQUIRE)) {
+        uint8_t n = __atomic_load_n(&t->n_pool_slots, __ATOMIC_ACQUIRE);
+        for (uint8_t i = 0; i < n; i++) {
+            NvnTexEntry *e = (NvnTexEntry *)t->pool_slots[i];
+            if (e && e->tex == t) {
+                NvnTexture *expect = t;
+                if (__atomic_compare_exchange_n(&e->tex, &expect, (NvnTexture *)NULL, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+                    e->tex_uint_state = 0;
+            }
+        }
+        return;
+    }
     for (int p = 0; p < 64 && g_texture_pools[p]; p++) {
         NvnTexEntry *e = g_texture_pools[p]->entries;
         for (int i = 0; i < g_texture_pools[p]->count; i++)
             if (e[i].tex == t) {
                 NvnTexture *expect = t;  // (overwritten on a miss)
-                __atomic_compare_exchange_n(&e[i].tex, &expect, (NvnTexture *)NULL, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+                if (__atomic_compare_exchange_n(&e[i].tex, &expect, (NvnTexture *)NULL, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+                    e[i].tex_uint_state = 0;
             }
     }
 }
@@ -634,7 +660,9 @@ static void register_texture(Cpu *c) {
     if (v.has_view) memcpy(&v.view, AP(3), sizeof v.view);
     extern uint64_t renderer_present_count(void);
     v.reg_frame = (uint32_t)renderer_present_count();
-    backend_pool_write(&((NvnTexEntry *)d->entries)[id], &v, sizeof v, 1);  // [XCDE] T240: in command order (exec.c)
+    NvnTexEntry *slot = &((NvnTexEntry *)d->entries)[id];
+    if (v.tex) nvn_texture_note_pool_slot(v.tex, slot);
+    backend_pool_write(slot, &v, sizeof v, 1);  // [XCDE] T240: in command order (exec.c)
 }
 NVN(nvnTexturePoolRegisterTexture) { register_texture(c); }
 NVN(nvnTexturePoolRegisterImage) { register_texture(c); }

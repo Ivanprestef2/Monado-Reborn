@@ -29,7 +29,9 @@ static VkPipeline present_pipeline(VkFormat fmt) {
     for (int i = 0; i < 4; i++) if (cache[i].p && cache[i].f == fmt) return cache[i].p;
     if (!present_layout) {
         VkDescriptorSetLayoutBinding b = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
-        VkDescriptorSetLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &b};
+        VkDescriptorSetLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                              .flags = g_vk.cmd_push_descriptor_set ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR : 0,
+                                              .bindingCount = 1, .pBindings = &b};
         VK_CHECK(vkCreateDescriptorSetLayout(g_vk.dev, &li, NULL, &present_set_layout));
         VkPushConstantRange r = {VK_SHADER_STAGE_VERTEX_BIT, 0, 32};
         VkPipelineLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
@@ -89,7 +91,9 @@ static VkPipeline post_pipeline(const char *fs) {
         VkDescriptorSetLayoutBinding b[3];
         for (uint32_t i = 0; i < 3; i++)
             b[i] = (VkDescriptorSetLayoutBinding){i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
-        VkDescriptorSetLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 3, .pBindings = b};
+        VkDescriptorSetLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                              .flags = g_vk.cmd_push_descriptor_set ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR : 0,
+                                              .bindingCount = 3, .pBindings = b};
         VK_CHECK(vkCreateDescriptorSetLayout(g_vk.dev, &li, NULL, &post_set_layout));
         VkPushConstantRange r = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32};
         VkPipelineLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
@@ -183,12 +187,48 @@ static VkImageView smaa_lut(int i) {
     return post_view(d);
 }
 
+// [XCDE] Perf: scoped barrier for post-processing passes instead of vk_full_barrier (ALL_COMMANDS -> ALL_COMMANDS).
+static void post_barrier(VkCommandBuffer cb) {
+    VkMemoryBarrier2 mb = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                        VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                         VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+                         VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+    };
+    VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    vkCmdPipelineBarrier2(cb, &di);
+}
+
+static void post_bind_samplers(VkCommandBuffer cb, VkPipelineLayout layout, VkDescriptorSetLayout set_layout,
+                               const VkImageView *srcs, int n) {
+    VkDescriptorImageInfo ii[3];
+    VkWriteDescriptorSet w[3];
+    for (int i = 0; i < n; i++) {
+        ii[i] = (VkDescriptorImageInfo){vk_default_sampler(true), srcs[i], VK_IMAGE_LAYOUT_GENERAL};
+        w[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = (uint32_t)i,
+                                      .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                      .pImageInfo = &ii[i]};
+    }
+    if (g_vk.cmd_push_descriptor_set) {
+        q_vkCmdPushDescriptorSetKHR(g_vk.cmd_push_descriptor_set, cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, (uint32_t)n, w);
+        return;
+    }
+    VkDescriptorSet ds = vk_alloc_set(set_layout);
+    for (int i = 0; i < n; i++) w[i].dstSet = ds;
+    vkUpdateDescriptorSets(g_vk.dev, (uint32_t)n, w, 0, NULL);
+    vk_bind_graphics_sets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &ds, 0, NULL);
+}
+
 // One post pass (outside the window image's rendering): srcs (bindings 0..n-1) -> dst, fragment shader `fs`.
 // clear: start from zero (SMAA's edge pass only writes edge pixels; its weights / output read them).
 static void post_pass(VkCommandBuffer cb, const char *fs, const VkImageView *srcs, int n, TexBackend *dst, const float pc[8],
                       bool clear) {
     VkPipeline pipe = post_pipeline(fs);  // (before the rendering begins: created inside it, the NVIDIA driver crashed)
-    vk_full_barrier(cb);
+    post_barrier(cb);
     VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = post_view(dst),
                                     .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
                                     .loadOp = clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
@@ -196,18 +236,8 @@ static void post_pass(VkCommandBuffer cb, const char *fs, const VkImageView *src
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {dst->width, dst->height}},
                           .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &ca};
     vkCmdBeginRendering(cb, &ri);
-    VkDescriptorSet ds = vk_alloc_set(post_set_layout);
-    VkDescriptorImageInfo ii[3];
-    VkWriteDescriptorSet w[3];
-    for (int i = 0; i < n; i++) {
-        ii[i] = (VkDescriptorImageInfo){vk_default_sampler(true), srcs[i], VK_IMAGE_LAYOUT_GENERAL};
-        w[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = (uint32_t)i,
-                                      .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                      .pImageInfo = &ii[i]};
-    }
-    vkUpdateDescriptorSets(g_vk.dev, (uint32_t)n, w, 0, NULL);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-    vk_bind_graphics_sets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, post_layout, 0, 1, &ds, 0, NULL);
+    post_bind_samplers(cb, post_layout, post_set_layout, srcs, n);
     VkViewport vp = {0, 0, (float)dst->width, (float)dst->height, 0, 1};
     VkRect2D sc = {{0, 0}, {dst->width, dst->height}};
     vkCmdSetViewport(cb, 0, 1, &vp);
@@ -247,6 +277,8 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
         vk_tmp_frame_state(&tmp_cam, &tmp_frame, &tmp_depth, &tmp_jit, &tmp_dm1);
         bool cam = tmp_cam->ok && tmp_frame == renderer_present_count() && tmp_depth;
         vk_frame_suspend();
+        vk_tex_transition(cb, b, VK_IMAGE_LAYOUT_GENERAL);
+        if (cam && tmp_depth) vk_tex_transition(cb, tmp_depth, VK_IMAGE_LAYOUT_GENERAL);
         VkImageView t = tmp_upscale(cb, b, v, cam ? tmp_depth : NULL, cam ? tmp_cam : NULL, tmp_jit, tmp_dm1, ow, oh);
         extern VkImageView tmp_fg_hudless_target(void);
         VkImageView scene = t ? tmp_hud_scene_view(b->width, b->height) : VK_NULL_HANDLE;
@@ -258,7 +290,6 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
             TexBackend *encoded = post_image(6, ow, oh);
             float pe[8] = {1.0f / ow, 1.0f / oh};
             post_pass(cb, "tmp_srgb.frag", &t, 1, encoded, pe, false);
-            vk_full_barrier(cb);
             t = post_view(encoded);
         }
         if (scene) {  // [XCDE] T213: the upscaled scene + what the HUD passes added (render size, bilinear)
@@ -271,9 +302,9 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
             float ph[8] = {1.0f / ow, 1.0f / oh, 1.0f / b->width, 1.0f / b->height, (float)hud_old, fuse_srgb ? 1.0f : 0.0f};
             VkImageView hi[3] = {t, v, scene};
             post_pass(cb, "tmp_hud.frag", hi, 3, hud, ph, false);
-            vk_full_barrier(cb);
             t = post_view(hud);
         }
+        if ((need_srgb && !fuse_srgb) || scene) post_barrier(cb);
         vk_frame_resume();
         // [XCDE] v12 #29: the SMAA runs AFTER the upscaler (with FSR 3 / DLSS the early return made the SMAA block dead
         // code: toggling it changed nothing). The upscaled view is kept and the SMAA blends it at the output size.
@@ -290,8 +321,16 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
             fsr = ow > b->width + 1 || oh > b->height + 1;
         }
     }
-    if (!smaa && !fsr) return v;
+    if (!smaa && !fsr) {
+        if (b->cur_layout != VK_IMAGE_LAYOUT_GENERAL) {
+            vk_frame_suspend();
+            vk_tex_transition(cb, b, VK_IMAGE_LAYOUT_GENERAL);
+            vk_frame_resume();
+        }
+        return v;
+    }
     vk_frame_suspend();
+    vk_tex_transition(cb, b, VK_IMAGE_LAYOUT_GENERAL);
     if (fsr) {
         vk_gp_mark(cb, "post: fsr1_easu %ux%u -> %ux%u", b->width, b->height, ow, oh);
         float iw = (float)b->width, ih = (float)b->height;
@@ -328,7 +367,7 @@ static VkImageView post_process(VkCommandBuffer cb, TexBackend *b, double ow_d, 
         post_pass(cb, "smaa_blend.frag", bi, 2, out, m, false);
         v = post_view(out);
     }
-    vk_full_barrier(cb);
+    post_barrier(cb);
     vk_frame_resume();
     {
         static uint32_t piw, pih, pow_, poh;
@@ -364,13 +403,9 @@ void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, floa
             VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, g_vk.sc_extent}, .layerCount = 1,
                                   .colorAttachmentCount = 1, .pColorAttachments = &ca};
             vkCmdBeginRendering(cb, &ri);
-            VkDescriptorSet hs = vk_alloc_set(present_set_layout);
-            VkDescriptorImageInfo hi = {vk_default_sampler(true), fg_scene ? fg_scene : src, VK_IMAGE_LAYOUT_GENERAL};
-            VkWriteDescriptorSet hw = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = hs, .dstBinding = 0, .descriptorCount = 1,
-                                       .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &hi};
-            vkUpdateDescriptorSets(g_vk.dev, 1, &hw, 0, NULL);
             vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
-            vk_bind_graphics_sets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, present_layout, 0, 1, &hs, 0, NULL);
+            VkImageView hsrc = fg_scene ? fg_scene : src;
+            post_bind_samplers(cb, present_layout, present_set_layout, &hsrc, 1);
             VkViewport hvp = {vx, vy, vw, vh, 0, 1};
             VkRect2D hsc = {{0, 0}, g_vk.sc_extent};
             vkCmdSetViewport(cb, 0, 1, &hvp);
@@ -378,17 +413,12 @@ void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, floa
             vkCmdPushConstants(cb, present_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pv);
             vkCmdDraw(cb, 3, 1, 0, 0);
             vkCmdEndRendering(cb);
-            vk_full_barrier(cb);
+            post_barrier(cb);
             vk_frame_resume();
         }
     }
-    VkDescriptorSet ds = vk_alloc_set(present_set_layout);
-    VkDescriptorImageInfo ii = {vk_default_sampler(true), src, VK_IMAGE_LAYOUT_GENERAL};
-    VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1,
-                              .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii};
-    vkUpdateDescriptorSets(g_vk.dev, 1, &w, 0, NULL);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
-    vk_bind_graphics_sets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, present_layout, 0, 1, &ds, 0, NULL);
+    post_bind_samplers(cb, present_layout, present_set_layout, &src, 1);
     VkViewport vp = {vx, vy, vw, vh, 0, 1};
     vkCmdSetViewport(cb, 0, 1, &vp);
     vkCmdPushConstants(cb, present_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pv);
@@ -403,13 +433,8 @@ void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, floa
 void vk_present_redraw(VkCommandBuffer cb) {
     if (!rp_src) return;
     VkPipeline p = present_pipeline(g_vk.sc_format);
-    VkDescriptorSet ds = vk_alloc_set(present_set_layout);
-    VkDescriptorImageInfo ii = {vk_default_sampler(true), rp_src, VK_IMAGE_LAYOUT_GENERAL};
-    VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1,
-                              .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii};
-    vkUpdateDescriptorSets(g_vk.dev, 1, &w, 0, NULL);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
-    vk_bind_graphics_sets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, present_layout, 0, 1, &ds, 0, NULL);
+    post_bind_samplers(cb, present_layout, present_set_layout, &rp_src, 1);
     vkCmdSetViewport(cb, 0, 1, &rp_vp);
     vkCmdPushConstants(cb, present_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, rp_pv);
     vkCmdDraw(cb, 3, 1, 0, 0);
@@ -429,6 +454,7 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
     uint32_t w = (uint32_t)(b->width * crop[2]), h = (uint32_t)(b->height * crop[3]);
     if (!w || !h) return;
     vk_end_pass();
+    vk_tex_transition(vk_cmd(), b, VK_IMAGE_LAYOUT_GENERAL);
     VkImage img;
     VmaAllocation mem;
     VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
@@ -449,13 +475,9 @@ void renderer_save_texture_tex(TexBackend *b, const char *path) {
                           .colorAttachmentCount = 1, .pColorAttachments = &ca};
     vkCmdBeginRendering(cb, &ri);
     VkPipeline p = present_pipeline(VK_FORMAT_R8G8B8A8_UNORM);
-    VkDescriptorSet ds = vk_alloc_set(present_set_layout);
-    VkDescriptorImageInfo ii = {vk_default_sampler(true), raw_view(b), VK_IMAGE_LAYOUT_GENERAL};
-    VkWriteDescriptorSet wr = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1,
-                               .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii};
-    vkUpdateDescriptorSets(g_vk.dev, 1, &wr, 0, NULL);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
-    vk_bind_graphics_sets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, present_layout, 0, 1, &ds, 0, NULL);
+    VkImageView sv = raw_view(b);
+    post_bind_samplers(cb, present_layout, present_set_layout, &sv, 1);
     VkViewport vp = {0, 0, (float)w, (float)h, 0, 1};
     VkRect2D sc = {{0, 0}, {w, h}};
     vkCmdSetViewport(cb, 0, 1, &vp);

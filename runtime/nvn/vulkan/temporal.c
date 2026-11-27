@@ -677,6 +677,9 @@ VkImageView tmp_upscale(VkCommandBuffer cb, TexBackend *color, VkImageView color
     static uint64_t frames, t_last;
     static float last_jit[2];
     if (!cam || !cam->ok || !depth || !(depth->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) || !color) { prev.ok = false; tmp_fg_idle(cb); return VK_NULL_HANDLE; }
+    vk_tex_transition(cb, color, VK_IMAGE_LAYOUT_GENERAL);
+    vk_tex_transition(cb, depth, VK_IMAGE_LAYOUT_GENERAL);
+    if (game_vel) vk_tex_transition(cb, game_vel, VK_IMAGE_LAYOUT_GENERAL);
     uint32_t rw = color->width, rh = color->height;
     if (!rw || !rh || !ow || !oh || ow > 16384 || oh > 16384 || rw > ow + 1 || rh > oh + 1) { prev.ok = false; tmp_fg_idle(cb); return VK_NULL_HANDLE; }
     jit_phases = (uint32_t)ceil(8.0 * ((double)ow / rw) * ((double)oh / rh));

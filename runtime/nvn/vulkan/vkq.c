@@ -26,7 +26,7 @@ enum {
     QOP_VIEWPORT, QOP_SCISSOR, QOP_BLENDC, QOP_DBIAS, QOP_DBIAS_EN, QOP_DTEST, QOP_DWRITE, QOP_DCMP, QOP_STEST, QOP_SOP, QOP_SCMASK,
     QOP_SWMASK, QOP_SREF, QOP_CULL, QOP_FRONT, QOP_TOPO, QOP_RESTART, QOP_BEGINR, QOP_ENDR, QOP_BARRIER, QOP_CPBUF, QOP_CPIMG,
     QOP_CPB2I, QOP_CPI2B, QOP_BLIT, QOP_RESOLVE, QOP_CLRCOL, QOP_CLRDS, QOP_CLRATT, QOP_QRESET, QOP_TS, QOP_FBL, QOP_SUBMIT,
-    QOP_VBUF2, QOP_SETW, QOP_QBEGIN, QOP_QEND, QOP_MARK, QOP_FILL, QOP_CHECKPOINT, QOP_PUSH_DESC
+    QOP_VBUF2, QOP_SETW, QOP_QBEGIN, QOP_QEND, QOP_MARK, QOP_FILL, QOP_CHECKPOINT, QOP_PUSH_DESC, QOP_PUSH_DESC_COMPACT
 };
 typedef struct { uint32_t op, size; VkCommandBuffer cb; } QHdr;   // size: whole record, header included
 static uint8_t *q_buf;
@@ -37,6 +37,7 @@ static _Alignas(64) uint64_t q_wl, q_r_cached;  // producer-only write cursor & 
 static QHdr *q_cur;
 static _Alignas(64) _Atomic int q_sleeping;
 static _Alignas(64) _Atomic int q_drain_wait;
+static _Alignas(64) _Atomic int q_space_wait;
 static FastMutex q_mu = FAST_MUTEX_INIT, q_dmu = FAST_MUTEX_INIT;
 static FastCond q_cv = FAST_COND_INIT, q_dcv = FAST_COND_INIT;
 static _Atomic int q_state = -1;         // -1 unknown, 0 off, 1 on
@@ -82,24 +83,25 @@ static inline void q_pause(void) {
     _mm_pause();
 #endif
 }
+static void q_wake(void);
 // room for n more bytes after q_wl
 static void q_wait_space(uint64_t n) {
     if (q_wl + n - q_r_cached <= Q_SIZE) return;
     q_r_cached = atomic_load_explicit(&q_r, memory_order_acquire);
     if (q_wl + n - q_r_cached <= Q_SIZE) return;
     uint64_t t0 = plat_now_ns();
-    unsigned spins = 0;
-    while (q_wl + n - (q_r_cached = atomic_load_explicit(&q_r, memory_order_acquire)) > Q_SIZE) {
-        if ((++spins & 1023u) == 0) {
-#ifdef _WIN32
-            SwitchToThread();
-#else
-            sched_yield();
-#endif
-        } else {
-            q_pause();
-        }
+    // Publish current writes so the record thread can drain and free space.
+    atomic_store_explicit(&q_w, q_wl, memory_order_release);
+    atomic_thread_fence(memory_order_seq_cst);
+    if (atomic_load_explicit(&q_sleeping, memory_order_acquire)) q_wake();
+    fast_mutex_lock(&q_dmu);
+    atomic_store_explicit(&q_space_wait, 1, memory_order_seq_cst);
+    while (q_wl + n - (q_r_cached = atomic_load_explicit(&q_r, memory_order_seq_cst)) > Q_SIZE) {
+        if (atomic_load_explicit(&q_sleeping, memory_order_acquire)) q_wake();
+        fast_cond_wait(&q_dcv, &q_dmu);
     }
+    atomic_store_explicit(&q_space_wait, 0, memory_order_release);
+    fast_mutex_unlock(&q_dmu);
     q_stat_full_ns += plat_now_ns() - t0;
 }
 static void *q_alloc(uint32_t op, VkCommandBuffer cb, size_t payload) {
@@ -146,8 +148,11 @@ void vkq_drain(void) {
     atomic_thread_fence(memory_order_seq_cst);
     if (atomic_load(&q_sleeping)) q_wake();
     uint64_t t0 = SDL_GetTicksNS();
-    for (int i = 0; i < 2000 && atomic_load(&q_r) < target; i++) q_pause();
-    if (atomic_load(&q_r) < target) {
+    uint64_t r_now = atomic_load_explicit(&q_r, memory_order_acquire);
+    if (r_now < target && target - r_now <= 4096u) {
+        for (int i = 0; i < 64 && atomic_load_explicit(&q_r, memory_order_acquire) < target; i++) q_pause();
+    }
+    if (atomic_load_explicit(&q_r, memory_order_acquire) < target) {
         fast_mutex_lock(&q_dmu);
         atomic_store(&q_drain_wait, 1);
         while (atomic_load(&q_r) < target) {
@@ -222,30 +227,75 @@ typedef struct {
     VkDescriptorBufferInfo *bi;
     VkDescriptorImageInfo *ii;
 } QPushDesc;
+typedef union {
+    VkDescriptorBufferInfo bi;
+    VkDescriptorImageInfo ii;
+} QDescInfo;
 void q_vkCmdPushDescriptorSetKHR(PFN_vkCmdPushDescriptorSetKHR fn, VkCommandBuffer cb, VkPipelineBindPoint bp,
                                  VkPipelineLayout layout, uint32_t set, uint32_t n, const VkWriteDescriptorSet *w) {
     if (!vkq_enabled()) { fn(cb, bp, layout, set, n, w); return; }
-    uint32_t nbuf = 0, nimg = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        if (w[i].pBufferInfo) nbuf++;
-        else if (w[i].pImageInfo) nimg++;
-    }
-    QEXTRA(QOP_PUSH_DESC, cb, QPushDesc, n * sizeof(VkWriteDescriptorSet) + nbuf * sizeof(VkDescriptorBufferInfo) + nimg * sizeof(VkDescriptorImageInfo) + 32);
-    a->fn = fn; a->bp = bp; a->l = layout; a->set = set; a->n = n; a->nbuf = nbuf; a->nimg = nimg;
+    // [XCDE] Perf: single-pass copy using unified 24B QDescInfo payload (sizeof BufferInfo == sizeof ImageInfo == 24).
+    QEXTRA(QOP_PUSH_DESC, cb, QPushDesc, n * (sizeof(VkWriteDescriptorSet) + sizeof(QDescInfo)) + 16);
+    a->fn = fn; a->bp = bp; a->l = layout; a->set = set; a->n = n; a->nbuf = 0; a->nimg = 0;
     QCOPY(a->w, w, n * sizeof(VkWriteDescriptorSet));
-    QCOPY(a->bi, NULL, nbuf * sizeof(VkDescriptorBufferInfo));
-    QCOPY(a->ii, NULL, nimg * sizeof(VkDescriptorImageInfo));
-    uint32_t bi_i = 0, ii_i = 0;
+    QDescInfo *infos;
+    QCOPY(infos, NULL, n * sizeof(QDescInfo));
+    VkWriteDescriptorSet *dw = a->w;
     for (uint32_t i = 0; i < n; i++) {
-        a->w[i].dstSet = VK_NULL_HANDLE;
-        a->w[i].pNext = NULL;
+        dw[i].dstSet = VK_NULL_HANDLE;
+        dw[i].pNext = NULL;
         if (w[i].pBufferInfo) {
-            a->bi[bi_i] = *w[i].pBufferInfo;
-            a->w[i].pBufferInfo = &a->bi[bi_i++];
+            infos[i].bi = *w[i].pBufferInfo;
+            dw[i].pBufferInfo = &infos[i].bi;
         } else if (w[i].pImageInfo) {
-            a->ii[ii_i] = *w[i].pImageInfo;
-            a->w[i].pImageInfo = &a->ii[ii_i++];
+            infos[i].ii = *w[i].pImageInfo;
+            dw[i].pImageInfo = &infos[i].ii;
         }
+    }
+    q_commit();
+}
+typedef struct {
+    uint32_t binding;
+    VkDescriptorType type;
+    QDescInfo info;
+} QCompactDesc;
+typedef struct {
+    PFN_vkCmdPushDescriptorSetKHR fn;
+    VkPipelineBindPoint bp;
+    VkPipelineLayout l;
+    uint32_t set, n;
+    QCompactDesc *items;
+} QPushDescCompact;
+void q_vkCmdPushDescriptorSetCompact(PFN_vkCmdPushDescriptorSetKHR fn, VkCommandBuffer cb, VkPipelineBindPoint bp,
+                                     VkPipelineLayout layout, uint32_t set, uint32_t n,
+                                     const uint32_t *bindings, const VkDescriptorType *types,
+                                     const VkDescriptorBufferInfo *bi, const VkDescriptorImageInfo *ii) {
+    if (!vkq_enabled()) {
+        VkWriteDescriptorSet w[128];
+        if (n > 128) n = 128;
+        for (uint32_t i = 0; i < n; i++) {
+            VkDescriptorType bt = types[i];
+            int is_img = (bt == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || bt == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+            w[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = bindings[i],
+                                          .descriptorCount = 1, .descriptorType = bt,
+                                          .pImageInfo = is_img ? &ii[i] : NULL, .pBufferInfo = is_img ? NULL : &bi[i]};
+        }
+        fn(cb, bp, layout, set, n, w);
+        return;
+    }
+    // [XCDE] Wave 20: compact 32B/binding ring record (vs 88B/binding for full VkWriteDescriptorSet).
+    QEXTRA(QOP_PUSH_DESC_COMPACT, cb, QPushDescCompact, n * sizeof(QCompactDesc) + 16);
+    a->fn = fn; a->bp = bp; a->l = layout; a->set = set; a->n = n;
+    QCOPY(a->items, NULL, n * sizeof(QCompactDesc));
+    QCompactDesc *it = a->items;
+    for (uint32_t i = 0; i < n; i++) {
+        VkDescriptorType bt = types[i];
+        it[i].binding = bindings[i];
+        it[i].type = bt;
+        if (bt == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || bt == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+            it[i].info.ii = ii[i];
+        else
+            it[i].info.bi = bi[i];
     }
     q_commit();
 }
@@ -521,6 +571,22 @@ static void q_exec(const QHdr *h) {
     case QOP_FILL: { const QFill *a = p; (vkCmdFillBuffer)(cb, a->b, a->off, a->size, a->v); break; }
     case QOP_CHECKPOINT: { const QCheckpoint *a = p; a->fn(cb, a->m); break; }
     case QOP_PUSH_DESC: { const QPushDesc *a = p; a->fn(cb, a->bp, a->l, a->set, a->n, a->w); break; }
+    case QOP_PUSH_DESC_COMPACT: {
+        const QPushDescCompact *a = p;
+        VkWriteDescriptorSet w[128];
+        uint32_t n = a->n > 128 ? 128 : a->n;
+        const QCompactDesc *it = a->items;
+        for (uint32_t i = 0; i < n; i++) {
+            VkDescriptorType bt = it[i].type;
+            int is_img = (bt == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || bt == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+            w[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = it[i].binding,
+                                          .descriptorCount = 1, .descriptorType = bt,
+                                          .pImageInfo = is_img ? &it[i].info.ii : NULL,
+                                          .pBufferInfo = is_img ? NULL : &it[i].info.bi};
+        }
+        a->fn(cb, a->bp, a->l, a->set, n, w);
+        break;
+    }
     default: FATAL("[vkq] bad record op %u\n", h->op);
     }
 }
@@ -561,9 +627,21 @@ static void *q_main(void *arg) {
             const QHdr *h = (const QHdr *)(q_buf + (r & (Q_SIZE - 1)));
             if (h->op != QOP_WRAP) q_exec(h);
             r += h->size;
-            if ((++batch & 31) == 0) atomic_store_explicit(&q_r, r, memory_order_release);
+            if ((++batch & 31) == 0) {
+                atomic_store_explicit(&q_r, r, memory_order_release);
+                if (__builtin_expect(atomic_load_explicit(&q_space_wait, memory_order_acquire), 0)) {
+                    fast_mutex_lock(&q_dmu);
+                    fast_cond_broadcast(&q_dcv);
+                    fast_mutex_unlock(&q_dmu);
+                }
+            }
         }
         atomic_store_explicit(&q_r, r, memory_order_release);
+        if (__builtin_expect(atomic_load_explicit(&q_space_wait, memory_order_acquire), 0)) {
+            fast_mutex_lock(&q_dmu);
+            fast_cond_broadcast(&q_dcv);
+            fast_mutex_unlock(&q_dmu);
+        }
         atomic_fetch_add(&q_stat_busy_ns, plat_now_ns() - t0);
     }
     return NULL;

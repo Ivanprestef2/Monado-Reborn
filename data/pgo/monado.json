@@ -1,15 +1,15 @@
 {
-  "lifter_code": "0fe51d80fa5924cd02796f66667e9dccd2550b6ef5cb3e0ff9ff622a0862cb2b",
+  "lifter_code": "9a7774df1dcb4d7cad4fdf30af6ded49c1d0bb1bbdb05b1099d894158eff5eba",
   "lifter_tree": "afe1a014ae3360c1bc7955faf34c144b60689905",
   "headers": {
-    "runtime/cpu.h": "edaced3d1cf0dae3af04c60c9bc56d020fb059f011a28710784a8f28d7794c3f",
+    "runtime/cpu.h": "e97b3bbf4d0de59950db727d416de4d9fb67daf84588eed836a02b18c88492a3",
     "runtime/simd.h": "a1a78c5324e1c74fac9abfea0165ed54f81f84d24731e37dceeda281d96db5dc",
-    "runtime/simd_fp.h": "40514d5077ba0aef3e549ca6567230e8a82126e524add794ae4e5fab5cde1fde"
+    "runtime/simd_fp.h": "3ee24ca43bb6f5a38ed2d276858af19fad108289d6d3fe09c5aa06ecdf4e1a62"
   },
-  "created": "2026-11-18T01:57:50",
+  "created": "2026-11-27T06:05:27",
   "profraw": [
-    "default_16910570400499627971_0.profraw"
+    "default_16906413687449169859_0.profraw"
   ],
-  "bytes": 13798136,
-  "text_bytes": 8183200
+  "bytes": 11906680,
+  "text_bytes": 7542455
 }

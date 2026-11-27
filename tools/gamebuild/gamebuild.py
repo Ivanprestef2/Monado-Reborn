@@ -530,6 +530,43 @@ def compiler_env(resources, out, link):
 _PGO_FLAGS = {}
 
 
+_LOCAL_ISA_FLAGS = None
+
+
+def local_isa_flags():
+    """Safe scalar/128-bit host ISA extensions for locally-built lasgame (never redistributed).
+    Enables hardware FMA (removing runtime simd_host_fma checks in runtime/simd.h) and BMI/LZCNT without
+    enabling 256-bit AVX2 auto-vectorization (which regressed Zen+). Disable with MONADO_GAMEBUILD_NATIVE=0."""
+    global _LOCAL_ISA_FLAGS
+    if _LOCAL_ISA_FLAGS is not None:
+        return _LOCAL_ISA_FLAGS
+    if os.environ.get('MONADO_GAMEBUILD_NATIVE') == '0':
+        _LOCAL_ISA_FLAGS = []
+        return _LOCAL_ISA_FLAGS
+    flags = []
+    if sys.platform.startswith('linux'):
+        try:
+            cpuinfo = Path('/proc/cpuinfo').read_text(encoding='utf-8', errors='ignore')
+            for line in cpuinfo.splitlines():
+                if line.startswith('flags'):
+                    feats = set(line.split(':', 1)[1].split())
+                    if 'fma' in feats:
+                        flags.append('-mfma')
+                    if 'bmi1' in feats:
+                        flags.append('-mbmi')
+                    if 'bmi2' in feats:
+                        flags.append('-mbmi2')
+                    if 'abm' in feats or 'lzcnt' in feats:
+                        flags.append('-mlzcnt')
+                    break
+        except OSError:
+            pass
+    if os.environ.get('MONADO_GAMEBUILD_THINLTO') == '1':
+        flags.append('-flto=thin')
+    _LOCAL_ISA_FLAGS = flags
+    return _LOCAL_ISA_FLAGS
+
+
 def pgo_flags(resources, link):
     """The staged profile (docs/guides/PGO.md): unprofiled / changed functions compile without one, so no warnings.
     MONADO_PGO_ID puts the profile's digest on the command line: zig's cache (zig-cache in the output folder, kept
@@ -622,7 +659,8 @@ def compile_units(resources, out, link, jobs, log):
             finished(source, key)
             return key, signature, target
         command = ([str(compiler)] + list(link.get('compile', ['cc'])) + list(link.get('guest_flags', [])) +
-                   pgo_flags(resources, link) + [f'-I{item}' for item in include] + ['-c', str(source), '-o', str(target)])
+                   local_isa_flags() + pgo_flags(resources, link) +
+                   [f'-I{item}' for item in include] + ['-c', str(source), '-o', str(target)])
         result = run_tool(command, compiler_env(resources, out, link), log, f'compile {key}', COMPILE_TIMEOUT)
         if result.returncode != 0:
             failures.append(f'{key}:\n{result.stdout}{result.stderr}')

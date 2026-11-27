@@ -14,7 +14,6 @@
     "layout(location=0) out vec4 c0;\n" \
     "layout(set=1,binding=1,std140) uniform CB1 { uvec4 cb1[16]; };\n" \
     "layout(set=1,binding=3,std140) uniform CB3 { uvec4 cb3[16]; };\n" \
-    "layout(set=1,binding=19,std140) uniform Tint { vec4 ltint[2]; };\n" \
     "layout(set=1,binding=32) uniform sampler2D t0;\n" \
     "layout(set=1,binding=33) uniform sampler2D t1;\n" \
     "#define K(i,j) uintBitsToFloat(cb3[i][j])\n" \
@@ -49,8 +48,6 @@
     " vec3 m=max(g.rgb*(4.0*K(1,2)),c);\n" \
     " float l=fma(m.b,uintBitsToFloat(cb1[0].y),fma(m.g,uintBitsToFloat(cb1[0].x),m.r*0.29899999));\n" \
     " c0=vec4(m*(1.0/fma(l,K(1,3),1.0)),max(al,g.a));\n" \
-    " if(ltint[0].w>0.0) { float q=dot(c0.rgb,vec3(0.299,0.587,0.114));\n" \
-    "  c0.rgb=mix(c0.rgb,ltint[0].rgb*pow(q,ltint[1].w)+ltint[1].rgb*q,ltint[0].w); }\n" \
     "}\n"
 
 static const char monado_bloom_prefilter_karis_glsl[] = "#version 460\n#define KARIS 1\n" MONADO_BLOOM_PREFILTER_BODY;
