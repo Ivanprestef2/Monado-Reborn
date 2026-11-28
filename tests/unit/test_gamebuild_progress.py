@@ -153,7 +153,11 @@ class BuildCache(unittest.TestCase):
             validate.assert_not_called()
             with self.assertRaisesRegex(SystemExit, 'strict dump mismatch'):
                 gb.main(args + ['--strict-dump'])
-            validate.assert_called_once_with(self.dump.resolve(), self.resources.resolve(), strict=True)
+            validate.assert_called_once()
+            dump, resources = validate.call_args.args
+            self.assertTrue(dump.samefile(self.dump))
+            self.assertTrue(resources.samefile(self.resources))
+            self.assertEqual(validate.call_args.kwargs, {'strict': True})
 
 
 if __name__ == '__main__':
