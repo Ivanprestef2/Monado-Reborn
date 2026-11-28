@@ -11,6 +11,10 @@ INC="-Iruntime -Iruntime/nvn -Iruntime/nvn/maxwell -Ithird_party"
 if [ -n "${VMA_INCLUDE_DIR:-}" ]; then
   INC="$INC -I$VMA_INCLUDE_DIR"
 fi
+if [ "${MONADO_REQUIRE_NATIVE_DEPS:-0}" = 1 ]; then
+  pkg-config --exists sdl3 shaderc || { echo 'SDL3 and shaderc are required' >&2; exit 1; }
+  echo '#include <vk_mem_alloc.h>' | "$CC" $INC -x c -E - >/dev/null || exit 1
+fi
 
 run_test() {
   local name="$1"; shift
@@ -61,6 +65,7 @@ run_test test_precompile_sig -std=gnu11 -Wall -Wextra -Werror -DXCDE_SHADER_SIG=
   tests/native/test_precompile_sig.c runtime/nvn/vulkan/precompile_sig.c
 # [XCDE] T280: the game files from a .nup package (runtime/services/game_files.c)
 run_test test_nup_package -std=gnu11 -Wall -Wextra -Werror -D_GNU_SOURCE tests/native/test_nup_package.c runtime/services/game_files.c
+run_test test_romfs_virtual -std=gnu11 -Wall -Wextra -Werror -D_GNU_SOURCE tests/native/test_romfs_virtual.c runtime/services/romfs_virtual.c runtime/services/game_files.c -lpthread
 # [XCDE] T037: atomic save writes and commits (short pwrite, ENOSPC / fsync failures, journal kept on a failed commit).
 run_test test_fs_commit -std=gnu11 -w tests/native/test_fs_commit.c -lpthread
 
@@ -81,8 +86,9 @@ fi
 if pkg-config --exists sdl3 2>/dev/null; then
   SDL_CFLAGS="$(pkg-config --cflags sdl3)"
   SDL_LIBS="$(pkg-config --libs sdl3)"
+  run_test test_audio_playback -std=c11 -Wall -Wextra -Werror $SDL_CFLAGS tests/native/test_audio_playback.c
   run_test test_linux_write_watch -std=gnu11 -Wall -Wextra -Werror $SDL_CFLAGS tests/native/test_linux_write_watch.c runtime/platform/linux.c $SDL_LIBS -lpthread -ldl -lm
-  run_test test_condvar -std=gnu11 -D_GNU_SOURCE -w $SDL_CFLAGS tests/native/test_condvar.c runtime/platform/linux.c runtime/log.c runtime/diag/diag.c runtime/diag/sampler.c $SDL_LIBS -lpthread -ldl -lm
+  run_test test_condvar -std=gnu11 -D_GNU_SOURCE -w $SDL_CFLAGS tests/native/test_condvar.c runtime/ipc.c runtime/platform/linux.c runtime/log.c runtime/diag/diag.c runtime/diag/sampler.c $SDL_LIBS -lpthread -ldl -lm
 else
   echo "=== test_linux_write_watch / test_condvar: SKIPPED (sdl3 missing) ==="
 fi

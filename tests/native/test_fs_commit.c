@@ -56,7 +56,22 @@ ssize_t mock_pwrite(int fd, const void *buf, size_t n, off_t off) {
     return real_pwrite(fd, buf, n, off);
 }
 #define pwrite mock_pwrite
+static int restore_write_fail;
+static ssize_t restore_write(int fd, const void *data, size_t size) {
+    if (restore_write_fail == 2) {
+        restore_write_fail--;
+        return write(fd, data, size < 3 ? size : 3);
+    }
+    if (restore_write_fail == 1) {
+        restore_write_fail--;
+        errno = ENOSPC;
+        return -1;
+    }
+    return write(fd, data, size);
+}
+#define write restore_write
 #include "../../runtime/services/fs.c"
+#undef write
 #undef pwrite
 
 void rt_logf(const char *fmt, ...) { (void)fmt; }
@@ -298,11 +313,31 @@ static void test_journal_commit(void) {
     CHECK(!g_journals[1].dirty);
 }
 
+static void test_failed_restore_is_retryable(void) {
+    char live[1200], snapshot[1350], contents[32];
+    reset_tree();
+    g_njournals = 0;
+    CHECK(xcde_utf8_mkdir(journal) == 0);
+    path_join(live, sizeof live, root, "save.bin");
+    path_join(snapshot, sizeof snapshot, journal, "save.bin");
+    CHECK(write_text(live, "uncommitted") == 0);
+    CHECK(write_text(snapshot, "last committed") == 0);
+    restore_write_fail = 2;
+    CHECK(journal_mount(root) < 0);
+    CHECK(g_njournals == 0);
+    CHECK(read_text(snapshot, contents, sizeof contents) == 0 && !strcmp(contents, "last committed"));
+    CHECK(read_text(live, contents, sizeof contents) == 0 && !strcmp(contents, "uncommitted"));
+    CHECK(journal_mount(root) == 0);
+    CHECK(!exists(journal));
+    CHECK(read_text(live, contents, sizeof contents) == 0 && !strcmp(contents, "last committed"));
+}
+
 int main(void) {
     reset_tree();
     test_pwrite_all();
     test_file_write();
     test_journal_commit();
+    test_failed_restore_is_retryable();
     rm_rf(base, false);
     printf(fails ? "FAILED (%d)\n" : "OK\n", fails);
     return fails ? 1 : 0;

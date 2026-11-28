@@ -354,6 +354,8 @@ void romfs_file_read_hook(const char *path);
 // ------------------------------------------------------------------ IStorage (raw RomFS image)
 typedef struct { int fd; uint64_t size; bool virt; } Storage;  // [XCDE] virt: folder-backed image
 
+static void free_service_state(Service *s) { free(s->state); }
+
 static void storage(Service *s, IpcReq *req, IpcResp *resp) {
     Storage *st = s->state;
     switch (req->cmd) {
@@ -364,7 +366,12 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         if (size > b->size) size = b->size;
         ssize_t n = st->virt ? (ssize_t)rvfs_read((uint8_t *)(uintptr_t)b->addr, size, off)  // [XCDE]
                              : romfs_read(st->fd, (uint8_t *)(uintptr_t)b->addr, size, off);
-        if (n < 0) LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
+        if (n < 0 || (uint64_t)n != size) {
+            LOG("[fs] storage read failed at %llx: requested %llu bytes, got %lld\n",
+                (unsigned long long)off, (unsigned long long)size, (long long)n);
+            resp->result = MAKE_RESULT(2, 4000);
+            break;
+        }
         {
             const char *path = st->virt ? rvfs_file_at(off) : romfs_file_at(off);
             static const char *last;
@@ -401,7 +408,9 @@ static Service *open_romfs_storage(void) {
         Storage *st = calloc(1, sizeof *st);
         st->virt = true;
         st->size = rvfs_size();
-        return service_new("IStorage(romfs)", storage, st);
+        Service *service = service_new("IStorage(romfs)", storage, st);
+        service->on_close = free_service_state;
+        return service;
     }
     if (romfs_fd < 0) {
         char path[1024];
@@ -415,7 +424,9 @@ static Service *open_romfs_storage(void) {
     struct stat sb;
     fstat(romfs_fd, &sb);
     st->size = sb.st_size;
-    return service_new("IStorage(romfs)", storage, st);
+    Service *service = service_new("IStorage(romfs)", storage, st);
+    service->on_close = free_service_state;
+    return service;
 }
 
 // ------------------------------------------------------------------ host-directory filesystem
@@ -592,7 +603,12 @@ static int rm_rf(const char *p, bool keep_root) {
         if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
         char c[2048];
         snprintf(c, sizeof c, "%s/%s", p, e->d_name);
-        rm_rf(c, false);
+        if (rm_rf(c, false)) {
+            int error = errno;
+            xcde_closedir(d);
+            errno = error;
+            return -1;
+        }
     }
     xcde_closedir(d);
     return keep_root ? 0 : xcde_utf8_rmdir(p);
@@ -716,26 +732,64 @@ static void save_backup(const char *root) {
     }
 }
 
-// (mount) the journal of root, restoring a save left uncommitted; -1: none (table full)
+// [XCDE] T283: stage the restore before moving the live tree. The journal stays intact
+// until the restored tree is in place, including if the process stops between renames.
+static int journal_restore(const char *root, const char *journal) {
+    char staged[1100], old[1100];
+    snprintf(staged, sizeof staged, "%s.restore.tmp", root);
+    snprintf(old, sizeof old, "%s.restore.old", root);
+    if (rm_rf(staged, false) && errno != ENOENT) return -1;
+    if (rm_rf(old, false) && errno != ENOENT) return -1;
+    if (copy_tree(journal, staged)) return -1;
+    bool moved_live = xcde_utf8_rename(root, old) == 0;
+    if (!moved_live && errno != ENOENT) return -1;
+    if (xcde_utf8_rename(staged, root)) {
+        int error = errno;
+        if (moved_live) xcde_utf8_rename(old, root);
+        errno = error;
+        return -1;
+    }
+    // Retire the journal by rename before recursive deletion so a partial delete
+    // can never look like a valid recovery snapshot on the next mount.
+    if (rm_rf(old, false) && errno != ENOENT) return -1;
+    if (xcde_utf8_rename(journal, old)) return -1;
+    rm_rf(old, false);
+    return 0;
+}
+
+// Mount the journal of root. Failure leaves the mount unavailable and retryable.
 static int journal_mount(const char *root) {
     pthread_mutex_lock(&g_journal_lock);
     int j = 0;
     while (j < g_njournals && strcmp(g_journals[j].root, root)) j++;
     if (j == g_njournals) {
-        if (j == (int)(sizeof g_journals / sizeof g_journals[0])) { pthread_mutex_unlock(&g_journal_lock); return -1; }
-        g_njournals++;
-        snprintf(g_journals[j].root, sizeof g_journals[j].root, "%s", root);
+        if (j == (int)(sizeof g_journals / sizeof g_journals[0])) {
+            pthread_mutex_unlock(&g_journal_lock);
+            errno = ENOSPC;
+            return -1;
+        }
         char jp[1100], tp[1100];
         snprintf(jp, sizeof jp, "%s.journal", root);
         snprintf(tp, sizeof tp, "%s.journal.tmp", root);
-        rm_rf(tp, false);  // (a copy cut short: the save itself was not touched yet)
         struct stat sb;
-        if (!xcde_utf8_stat(jp, &sb) && S_ISDIR(sb.st_mode)) {
-            LOG("[save] %s: a save was not committed (the game stopped mid-save) - the last committed one is put back\n", root);
-            rm_rf(root, true);
-            if (copy_tree(jp, root)) LOG("[save] restoring %s failed: %s kept\n", root, jp);
-            else rm_rf(jp, false);
+        int status = xcde_utf8_stat(jp, &sb);
+        int error = 0;
+        if (!status) {
+            if (!S_ISDIR(sb.st_mode)) error = ENOTDIR;
+            else if (journal_restore(root, jp)) error = errno ? errno : EIO;
+        } else if (errno != ENOENT) {
+            error = errno;
         }
+        if (error) {
+            LOG("[save] recovery of %s failed (%s); mount refused and journal retained\n", root, strerror(error));
+            pthread_mutex_unlock(&g_journal_lock);
+            errno = error;
+            return -1;
+        }
+        rm_rf(tp, false);
+        snprintf(g_journals[j].root, sizeof g_journals[j].root, "%s", root);
+        g_journals[j].dirty = false;
+        g_njournals++;
         save_backup(root);
     }
     pthread_mutex_unlock(&g_journal_lock);
@@ -752,9 +806,15 @@ static int journal_touch(int j) {
         char jp[1100], tp[1100];
         snprintf(jp, sizeof jp, "%s.journal", sj->root);
         snprintf(tp, sizeof tp, "%s.journal.tmp", sj->root);
-        rm_rf(tp, false);
-        rm_rf(jp, false);
-        if (copy_tree(sj->root, tp) || xcde_utf8_rename(tp, jp)) {
+        struct stat sb;
+        if (!xcde_utf8_stat(jp, &sb)) {
+            errno = EEXIST;
+            rc = -1;
+        } else if (errno != ENOENT || (rm_rf(tp, false) && errno != ENOENT) ||
+                   copy_tree(sj->root, tp) || xcde_utf8_rename(tp, jp)) {
+            rc = -1;
+        }
+        if (rc) {
             int error = errno ? errno : EIO;
             LOG("[save] journal of %s could not be written (%s); the save is not changed\n", sj->root, strerror(error));
             rm_rf(tp, false);
@@ -774,21 +834,24 @@ static int journal_commit(int j) {
     SaveJournal *sj = &g_journals[j];
     int rc = 0;
     if (sj->dirty) {
-        char jp[1100];
+        char jp[1100], retired[1100];
         snprintf(jp, sizeof jp, "%s.journal", sj->root);
+        snprintf(retired, sizeof retired, "%s.journal.retired", sj->root);
         int error = 0;
         if (quickstep_save_flush(sj->root)) {  // [XCDE] Quick Step metadata becomes final with the native Commit
             error = errno ? errno : EIO;
             LOG("[save] Quick Step metadata of %s could not be flushed (%s)\n", sj->root, strerror(error));
         }
         if (fsync_tree(sj->root) && !error) error = errno ? errno : EIO;
-        if (!error && rm_rf(jp, false) && errno != ENOENT) error = errno ? errno : EIO;
+        if (!error && rm_rf(retired, false) && errno != ENOENT) error = errno ? errno : EIO;
+        if (!error && xcde_utf8_rename(jp, retired)) error = errno ? errno : EIO;
         if (error) {
             LOG("[save] commit of %s failed (%s); the journal is kept\n", sj->root, strerror(error));
             errno = error;
             rc = -1;
         } else {
             sj->dirty = false;
+            rm_rf(retired, false);
             quickstep_save_committed(sj->root);
         }
     }
@@ -900,8 +963,16 @@ static Service *open_host_fs(const char *sub) {
         if (*q == '/') { *q = 0; xcde_utf8_mkdir(cmd); *q = '/'; }
     xcde_utf8_mkdir(cmd);
     LOG("[fs] mounted host directory %s\n", fs->root);
-    if (fs->save && !getenv("XCDE_SAVE_JOURNAL_OFF")) fs->journal = journal_mount(fs->root);
-    return service_new("IFileSystem", filesystem, fs);
+    if (fs->save && !getenv("XCDE_SAVE_JOURNAL_OFF")) {
+        fs->journal = journal_mount(fs->root);
+        if (fs->journal < 0) {
+            free(fs);
+            return NULL;
+        }
+    }
+    Service *service = service_new("IFileSystem", filesystem, fs);
+    service->on_close = free_service_state;
+    return service;
 }
 
 // ------------------------------------------------------------------ fsp-srv
@@ -915,7 +986,9 @@ SERVICE("fsp-srv", fsp_srv) {
         uint8_t type = IN(uint8_t, 0x8 + 0x18);  // attribute.type
         char sub[64];
         snprintf(sub, sizeof sub, "save_%u", type);
-        ipc_return_object(resp, open_host_fs(sub));
+        Service *mount = open_host_fs(sub);
+        if (mount) ipc_return_object(resp, mount);
+        else resp->result = errno_result();
         break;
     }
     case 200: ipc_return_object(resp, open_romfs_storage()); break;  // OpenDataStorageByCurrentProcess

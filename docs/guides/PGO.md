@@ -1,11 +1,12 @@
 # Optimisation level and profile-guided build
 
-The generated game code and the C runtime compile at `-O1` by default. Two CMake options change that:
+The generated game code and runtime compile at `-O3` by default. The release workflow uses the same level on Windows
+and Linux, and the packaged builder uses it when it compiles the player's game code.
 
 | Option | Values | What it does |
 |---|---|---|
-| `MONADO_OPT` | `O1` (default), `O2` | optimisation level of the game code and the C runtime (`exec.c` and `textures.c` are `-O2` either way) |
-| `MONADO_PGO` | empty (off), `gen`, a `.profdata` file | `gen`: an instrumented build that records which code runs; a file: compile with that record. Either one raises `-O1` to `-O2` |
+| `MONADO_OPT` | `O0`, `O1`, `O2`, `O3` (default) | optimisation level of the game code, runtime, and launcher |
+| `MONADO_PGO` | empty (off), `gen`, a `.profdata` file | `gen` instruments the build. A profile file enables profile-guided optimisation at the selected optimisation level. |
 | `MONADO_OUT_DIR` | a folder | where the executables go, so several variants can sit side by side for A/B runs |
 
 The idea comes from TotK Recomp (`docs/pgo.md` there): a profile lays hot paths out straight, inlines hot calls and
@@ -74,7 +75,7 @@ that build:
 - Both platform jobs build the runtime with `-DMONADO_PGO=build/pgo/monado.profdata` and stage it for the player's
   build (`tools/gamebuild/gamebuild_stage.py --pgo`, `link.json` `"pgo"`); `tools/gamebuild/gamebuild.py` then compiles every game file
   with `-fprofile-use`.
-- The guest flags are `-O2` (`tools/build/game_id.py`), and `GAMELIB_ID` includes the profile, so a new profile makes every
+- The guest flags are `-O3` (`tools/build/game_id.py`), and `GAMELIB_ID` includes the profile, so a new profile makes every
   player's launcher rebuild the game code once.
 - Every compile that uses the profile also gets `-DMONADO_PGO_ID=<its digest>` (CMake and `tools/gamebuild/gamebuild.py`).
   zig's compiler cache keys on the command line and the included files, not on the profile's contents: without the

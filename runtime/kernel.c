@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include "hle.h"
+#include "ipc.h"
 #include "kernel.h"
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -50,8 +51,9 @@ static uint32_t handle_alloc(KObject *o) {
     FATAL("out of handles\n");
 }
 
-KObject *handle_get(uint32_t h) {
-    if (h == PSEUDO_THREAD) return &t_cur->obj;
+// Caller holds g_klock.
+static KObject *handle_get(uint32_t h) {
+    if (h == PSEUDO_THREAD) return t_cur ? &t_cur->obj : NULL;
     if (h < 0x101 || h >= 0x100 + MAX_HANDLES) return NULL;
     return handles[h - 0x100];
 }
@@ -63,11 +65,41 @@ uint32_t kernel_new_handle(KObject *o) {
     return h;
 }
 
-static void handle_close(uint32_t h) {
+static KObject *handle_get_type(uint32_t h, int type) {
+    pthread_mutex_lock(&g_klock);
     KObject *o = handle_get(h);
-    if (!o || h == PSEUDO_THREAD) return;
-    handles[h - 0x100] = NULL;
-    o->refs--;
+    if (!o || o->type != type) o = NULL;
+    pthread_mutex_unlock(&g_klock);
+    return o;
+}
+
+KObject *kernel_session_acquire(uint32_t h) {
+    pthread_mutex_lock(&g_klock);
+    KObject *o = handle_get(h);
+    if (o && o->type == KOBJ_SESSION) o->refs++;
+    else o = NULL;
+    pthread_mutex_unlock(&g_klock);
+    return o;
+}
+
+void kernel_session_release(KObject *session) {
+    pthread_mutex_lock(&g_klock);
+    bool last = --session->refs == 0;
+    pthread_mutex_unlock(&g_klock);
+    if (last) ipc_session_destroy(session);
+}
+
+static void handle_close(uint32_t h) {
+    pthread_mutex_lock(&g_klock);
+    KObject *o = handle_get(h);
+    bool session = false;
+    if (o && h != PSEUDO_THREAD) {
+        handles[h - 0x100] = NULL;
+        session = o->type == KOBJ_SESSION;
+        if (!session) o->refs--;
+    }
+    pthread_mutex_unlock(&g_klock);
+    if (session) kernel_session_release(o);
 }
 
 // Threads blocked in WaitSynchronization; object signals wake only these (caller holds g_klock).
@@ -376,15 +408,16 @@ static KThread *thread_new(uint64_t entry, uint64_t arg, uint64_t stack_top, int
     t->entry = entry;
     t->prio = prio;
     t->core = core < 0 ? 0 : core;
-    t->id = next_thread_id++;
     t->cpu.x[0] = arg;
     t->cpu.sp = stack_top & ~15ull;
     t->cpu.excl_addr = ~0ull;
+    t->cpu.thread = t;
+    pthread_mutex_lock(&g_klock);
+    // [XCDE] T283: publish the thread and reserve its ID and IPC/TLS area under the same lock.
+    t->id = next_thread_id++;
     t->tlr = tls_next;
     tls_next += 0x200;
     t->cpu.tpidrro = t->tlr;
-    t->cpu.thread = t;
-    pthread_mutex_lock(&g_klock);
     t->anext = g_threads;
     g_threads = t;
     pthread_mutex_unlock(&g_klock);
@@ -842,8 +875,8 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         break;
     }
     case 0x09: {  // StartThread
-        KObject *o = handle_get((uint32_t)x[0]);
-        if (!o || o->type != KOBJ_THREAD) { x[0] = R_INVALID_HANDLE; break; }
+        KObject *o = handle_get_type((uint32_t)x[0], KOBJ_THREAD);
+        if (!o) { x[0] = R_INVALID_HANDLE; break; }
         thread_start((KThread *)o);
         x[0] = R_OK;
         break;
@@ -883,19 +916,19 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         break;
     }
     case 0x0C: {  // GetThreadPriority(_, handle)
-        KObject *o = handle_get((uint32_t)x[1]);
+        KObject *o = handle_get_type((uint32_t)x[1], KOBJ_THREAD);
         x[0] = o ? R_OK : R_INVALID_HANDLE;
         x[1] = o ? (uint64_t)((KThread *)o)->prio : 0;
         break;
     }
     case 0x0D: {  // SetThreadPriority
-        KObject *o = handle_get((uint32_t)x[0]);
+        KObject *o = handle_get_type((uint32_t)x[0], KOBJ_THREAD);
         if (o) ((KThread *)o)->prio = (int)x[1];
         x[0] = o ? R_OK : R_INVALID_HANDLE;
         break;
     }
     case 0x0E: {  // GetThreadCoreMask(_, _, handle)
-        KObject *o = handle_get((uint32_t)x[2]);
+        KObject *o = handle_get_type((uint32_t)x[2], KOBJ_THREAD);
         x[0] = o ? R_OK : R_INVALID_HANDLE;
         x[1] = o ? (uint64_t)((KThread *)o)->core : 0;
         x[2] = 0xF;
@@ -921,8 +954,8 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         break;
     }
     case 0x13: {  // MapSharedMemory(handle, addr, size, perm)
-        KObject *o = handle_get((uint32_t)x[0]);
-        if (!o || o->type != KOBJ_SHMEM) { x[0] = R_INVALID_HANDLE; break; }
+        KObject *o = handle_get_type((uint32_t)x[0], KOBJ_SHMEM);
+        if (!o) { x[0] = R_INVALID_HANDLE; break; }
         KSharedMem *s = (KSharedMem *)o;
         memset((void *)x[1], 0, x[2]);
         s->guest_addr = x[1];  // HLE services write straight into the guest's mapping
@@ -942,9 +975,7 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         break;
     }
     case 0x16:  // CloseHandle
-        pthread_mutex_lock(&g_klock);
         handle_close((uint32_t)x[0]);
-        pthread_mutex_unlock(&g_klock);
         x[0] = R_OK;
         break;
     case 0x18: {  // WaitSynchronization(_, handles, count, timeout)
@@ -985,7 +1016,7 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     }
     case 0x24: x[0] = R_OK; x[1] = 0x81; break;  // GetProcessId
     case 0x25: {  // GetThreadId(_, handle)
-        KObject *o = handle_get((uint32_t)x[1]);
+        KObject *o = handle_get_type((uint32_t)x[1], KOBJ_THREAD);
         x[0] = o ? R_OK : R_INVALID_HANDLE;
         x[1] = o ? ((KThread *)o)->id : 0;
         break;
@@ -1083,7 +1114,11 @@ void kernel_stop_threads(void (*idle)(void)) {
 // Reboot, step 2 (threads stopped): a fresh kernel. Kernel objects are leaked rather than freed: host statics
 // can still point at some (vi.c's vsync event, signalled by its host timer thread).
 void kernel_reset(void) {
+    KObject *sessions[MAX_HANDLES];
+    int nsessions = 0;
     pthread_mutex_lock(&g_klock);
+    for (int i = 1; i < MAX_HANDLES; i++)
+        if (handles[i] && handles[i]->type == KOBJ_SESSION) sessions[nsessions++] = handles[i];
     for (KThread *t = g_threads, *next; t; t = next) {
         next = t->anext;
         pthread_cond_destroy(&t->cond);
@@ -1097,6 +1132,7 @@ void kernel_reset(void) {
     next_thread_id = 0x50;
     g_rt_unwind = 0;
     pthread_mutex_unlock(&g_klock);
+    for (int i = 0; i < nsessions; i++) kernel_session_release(sessions[i]);
 
     pthread_mutex_lock(&region_lock);
     nregions = 0;

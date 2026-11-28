@@ -3365,7 +3365,11 @@ int main(int argc, char **argv) {
     int shot_tab = argc > 3 ? atoi(argv[3]) : 0, frame_no = 0;
     bool shot_pc = shot && argc > 4 && !strcmp(argv[4], "precompile");  // (... <tab> precompile: the bar after ~5 s of a run)
     bool force_launcher = false;
-    for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "--launcher")) force_launcher = true;
+    const char *requested_dump = nullptr;
+    if (!shot) for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--launcher")) force_launcher = true;
+        else if (!strcmp(argv[i], "--dump") && i + 1 < argc) requested_dump = argv[++i];
+    }
 #ifdef _WIN32
     g_llog = xcde_utf8_fopen((g_root + "\\build\\launcher.log").c_str(), "w");
     SetUnhandledExceptionFilter(crash_filter);
@@ -3374,8 +3378,14 @@ int main(int argc, char **argv) {
 #endif
     llog("launcher start, root %s", g_root.c_str());
     load();
+    if (requested_dump) {
+        if (strlen(requested_dump) >= sizeof g.game_dump || !dump_is_valid(requested_dump))
+            return fail("The selected game dump is invalid or its path is too long.");
+        snprintf(g.game_dump, sizeof g.game_dump, "%s", requested_dump);
+        if (!save()) llog("could not remember the selected game dump");
+    }
     check_game_version();  // [XCDE] GitHub #18: refuse launching on another game version's files
-    if (!shot && !force_launcher && g.skip_launcher && exists("targets/exefs/main") && exists(GAME_EXE) &&
+    if (!shot && !force_launcher && g.skip_launcher && dump_is_valid(effective_dump_dir()) && exists(GAME_EXE) &&
         !*g_mismatch_desc && gc_ready()) {
         llog("skip_launcher enabled and gamebuild ready: starting game directly");
         launch_game_process();

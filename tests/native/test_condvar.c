@@ -5,13 +5,11 @@
 #include "../../runtime/kernel.c"
 
 // ---- stubs for what kernel.c expects from the rest of the runtime
-int ipc_handle_request(Cpu *c, uint32_t handle) { (void)c; (void)handle; return 0; }
 void rt_dispatch(Cpu *c) { (void)c; }
 GuestFn dispatch_lookup(uint64_t addr) { (void)addr; return NULL; }
 Module g_modules[4]; int g_nmodules;
 void guest_call(Cpu *c, uint64_t addr) { (void)c; (void)addr; }
 void crash_handler_install(void) {}
-uint32_t ipc_connect_named_port(const char *name) { (void)name; return 0; }
 void rt_fatal_trace(void) { abort(); }
 void rt_fault_report(const char *w, uint64_t a, uint64_t p, uint64_t l) { (void)w; (void)a; (void)p; (void)l; abort(); }
 bool rt_fault_watch(uint64_t a, uint64_t p) { (void)a; (void)p; return false; }
@@ -84,6 +82,98 @@ static void test_concurrent_memory_map(void) {
     free(workers);
 }
 
+enum { THREAD_WORKERS = 8, THREADS_PER_WORKER = 1000 };
+
+static void *create_guest_threads(void *arg) {
+    pthread_mutex_t *start = arg;
+    pthread_mutex_lock(start);
+    pthread_mutex_unlock(start);
+    for (int i = 0; i < THREADS_PER_WORKER; i++) thread_new(0, 0, 0, 0, 0);
+    return NULL;
+}
+
+static void test_concurrent_thread_allocation(void) {
+    pthread_t workers[THREAD_WORKERS];
+    pthread_mutex_t start = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&start);
+    int created = 0;
+    for (; created < THREAD_WORKERS; created++)
+        if (pthread_create(&workers[created], NULL, create_guest_threads, &start)) break;
+    pthread_mutex_unlock(&start);
+    for (int i = 0; i < created; i++) pthread_join(workers[i], NULL);
+    pthread_mutex_destroy(&start);
+    CHECK(created == THREAD_WORKERS);
+
+    uint8_t seen_ids[THREAD_WORKERS * THREADS_PER_WORKER] = {0};
+    uint8_t seen_tls[THREAD_WORKERS * THREADS_PER_WORKER] = {0};
+    int count = 0;
+    for (KThread *t = g_threads; t; t = t->anext, count++) {
+        uint64_t id = t->id - 0x50, slot = (t->tlr - TLS_BASE) / 0x200;
+        CHECK(id < sizeof seen_ids && !seen_ids[id]);
+        CHECK(slot < sizeof seen_tls && !seen_tls[slot]);
+        CHECK(t->cpu.tpidrro == t->tlr);
+        if (id < sizeof seen_ids) seen_ids[id] = 1;
+        if (slot < sizeof seen_tls) seen_tls[slot] = 1;
+    }
+    CHECK(count == created * THREADS_PER_WORKER);
+    kernel_reset();
+}
+
+static int session_closes;
+
+static void session_close_callback(Service *service) {
+    (void)service;
+    int rc = pthread_mutex_trylock(&g_klock);
+    CHECK(rc == 0);
+    if (!rc) pthread_mutex_unlock(&g_klock);
+    session_closes++;
+}
+
+static uint32_t test_session(void) {
+    Service *service = service_new("test", NULL, NULL);
+    service->on_close = session_close_callback;
+    KSession *session = calloc(1, sizeof *session);
+    session->obj.type = KOBJ_SESSION;
+    session->svc = service;
+    return kernel_new_handle(&session->obj);
+}
+
+static void test_session_lifetime(void) {
+    _Alignas(16) uint32_t msg[64] = {0};
+    Cpu cpu = {.tpidrro = (uintptr_t)msg};
+    uint32_t handle = test_session();
+    cpu.x[0] = handle;
+    svc_impl(&cpu, 0x16, 0);
+    CHECK(session_closes == 1);
+
+    handle = test_session();
+    KObject *active = kernel_session_acquire(handle);
+    CHECK(active != NULL);
+    handle_close(handle);
+    CHECK(session_closes == 1);
+    if (active) kernel_session_release(active);
+    CHECK(session_closes == 2);
+
+    handle = test_session();
+    msg[0] = 2;
+    CHECK(ipc_handle_request(&cpu, handle) == R_OK);
+    CHECK(session_closes == 3);
+    handle_close(handle);
+    CHECK(session_closes == 3);
+
+    handle = test_session();
+    msg[0] = 5; msg[6] = 0;  // ConvertCurrentObjectToDomain
+    CHECK(ipc_handle_request(&cpu, handle) == R_OK);
+    msg[0] = 5; msg[1] = 0; msg[6] = 2;  // CloneCurrentObject
+    CHECK(ipc_handle_request(&cpu, handle) == R_OK);
+    uint32_t clone = msg[3];
+    CHECK(clone != 0 && clone != handle);
+    handle_close(handle);
+    CHECK(session_closes == 3);
+    handle_close(clone);
+    CHECK(session_closes == 4);
+}
+
 int main(void) {
     static uint32_t mutex_word, key_word;
     KThread th; memset(&th, 0, sizeof th);
@@ -110,6 +200,8 @@ int main(void) {
     CHECK(mutex_word == 0);
 
     test_concurrent_memory_map();
+    test_concurrent_thread_allocation();
+    test_session_lifetime();
 
     printf(fails ? "FAILED (%d)\n" : "OK\n", fails);
     return fails ? 1 : 0;

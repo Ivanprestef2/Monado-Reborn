@@ -87,7 +87,15 @@ class AppRunSkipLauncher(unittest.TestCase):
         self.write_ini('skip_launcher = 1\n')
         code, lines, _ = self.run_apprun('--launcher')
         self.assertEqual(code, 0)
-        self.assertEqual(lines, ['monado-launcher'])
+        self.assertEqual(lines, ['monado-launcher', 'arg --launcher'])
+
+    def test_explicit_dump_is_forwarded_without_changing_existing_targets(self):
+        targets = self.data / 'targets'
+        targets.mkdir()
+        code, lines, _ = self.run_apprun('--launcher', str(self.dump))
+        self.assertEqual(code, 0)
+        self.assertEqual(lines, ['monado-launcher', 'arg --dump', f'arg {self.dump}', 'arg --launcher'])
+        self.assertEqual(list(targets.iterdir()), [])
 
     def test_release_appimage_requires_matching_gamelib(self):
         self.link_dump()
@@ -97,25 +105,39 @@ class AppRunSkipLauncher(unittest.TestCase):
         (gb / 'link.json').write_text('{}', encoding='utf-8')
         (gb / 'gamelib-id.txt').write_text('build-v2\n', encoding='utf-8')
 
-        # Missing gamebuild/libmonado_game.so -> falls back to launcher to build it
+        # Missing gamebuild/lasgame.so -> falls back to launcher to build it
         code, lines, _ = self.run_apprun()
         self.assertEqual(code, 0)
         self.assertEqual(lines, ['monado-launcher'])
 
-        # Stale gamebuild/libmonado_game.so.id -> falls back to launcher to rebuild after update
+        # Stale gamebuild/lasgame.so.id -> falls back to launcher to rebuild after update
         out_gb = self.data / 'gamebuild'
         out_gb.mkdir()
-        (out_gb / 'libmonado_game.so').write_bytes(b'')
-        (out_gb / 'libmonado_game.so.id').write_text('build-v1\n', encoding='utf-8')
+        (out_gb / 'lasgame.so').write_bytes(b'')
+        (out_gb / 'lasgame.so.id').write_text('build-v1\n', encoding='utf-8')
         code, lines, _ = self.run_apprun()
         self.assertEqual(code, 0)
         self.assertEqual(lines, ['monado-launcher'])
 
         # Matching id -> skips launcher and launches game directly
-        (out_gb / 'libmonado_game.so.id').write_text('build-v2\n', encoding='utf-8')
+        (out_gb / 'lasgame.so.id').write_text('build-v2\n', encoding='utf-8')
         code, lines, _ = self.run_apprun()
         self.assertEqual(code, 0)
         self.assertEqual(lines, ['monado', 'arg targets'])
+
+    def test_skip_launcher_uses_library_next_to_remembered_dump(self):
+        package = self.appdir / 'usr/share/monado/gamebuild'
+        package.mkdir(parents=True)
+        (package / 'link.json').write_text('{}', encoding='utf-8')
+        (package / 'gamelib-id.txt').write_text('build-v2\n', encoding='utf-8')
+        compiled = self.dump / 'gamebuild'
+        compiled.mkdir()
+        (compiled / 'lasgame.so').touch()
+        (compiled / 'lasgame.so.id').write_text('build-v2\n', encoding='utf-8')
+        self.write_ini(f'skip_launcher = 1\ngamebuild_in_dump = 1\ngame_dump = {self.dump}\n')
+        code, lines, _ = self.run_apprun()
+        self.assertEqual(code, 0)
+        self.assertEqual(lines, ['monado', f'arg {self.dump}'])
 
 
 class SkipLauncherContracts(unittest.TestCase):

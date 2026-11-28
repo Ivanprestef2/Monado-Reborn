@@ -1,5 +1,6 @@
 // Applet manager (appletOE), apm, and lm.
 #include "../diag/diag.h"
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -98,7 +99,14 @@ static void generic_ok(Service *s, IpcReq *req, IpcResp *resp) {
 }
 
 // ------------------------------------------------------------------ IStorage / IStorageAccessor
-typedef struct { uint8_t *data; uint64_t size; } AmStorage;
+typedef struct { uint8_t *data; uint64_t size; _Atomic unsigned refs; } AmStorage;
+
+static void am_storage_close(Service *s) {
+    AmStorage *storage = s->state;
+    if (atomic_fetch_sub(&storage->refs, 1) != 1) return;
+    free(storage->data);
+    free(storage);
+}
 
 static void storage_accessor(Service *s, IpcReq *req, IpcResp *resp) {
     AmStorage *st = s->state;
@@ -125,7 +133,13 @@ static void storage_accessor(Service *s, IpcReq *req, IpcResp *resp) {
 }
 
 static void am_storage(Service *s, IpcReq *req, IpcResp *resp) {
-    if (req->cmd == 0) ipc_return_object(resp, service_new("IStorageAccessor", storage_accessor, s->state));
+    if (req->cmd == 0) {
+        AmStorage *storage = s->state;
+        atomic_fetch_add(&storage->refs, 1);
+        Service *accessor = service_new("IStorageAccessor", storage_accessor, storage);
+        accessor->on_close = am_storage_close;
+        ipc_return_object(resp, accessor);
+    }
     else diag_unimplemented("ipc", "[am] IStorage cmd %u", req->cmd);
 }
 
@@ -133,8 +147,11 @@ static Service *new_am_storage(const void *data, uint64_t size) {
     AmStorage *st = calloc(1, sizeof *st);
     st->data = calloc(1, size);
     st->size = size;
+    atomic_init(&st->refs, 1);
     if (data) memcpy(st->data, data, size);
-    return service_new("IStorage", am_storage, st);
+    Service *service = service_new("IStorage", am_storage, st);
+    service->on_close = am_storage_close;
+    return service;
 }
 
 extern const uint8_t g_user_id[16];

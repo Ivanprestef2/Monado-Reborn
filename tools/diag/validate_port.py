@@ -81,7 +81,7 @@ def main():
         # [XCDE] T282: the build generates <build>/inc/shader_sig.h for the precompile fingerprint; a validation compile
         # does not need it, so the unit gets the macro instead.
         extra = ['-DXCDE_SHADER_SIG="validation"'] if source.endswith('precompile_sig.c') else []
-        run(source.replace('/', '_'), [*compiler(cpp), '-c', '-w',
+        run(source.replace('/', '_'), [*compiler(cpp), '-O3', '-c', '-w',
             '-std=c++17' if cpp else '-std=gnu11', *includes(cpp), *extra, ROOT / 'runtime' / source,
             '-o', output / (source.replace('/', '_') + '.o')])
     extra_sources = {
@@ -101,7 +101,7 @@ def main():
         'test_tegra_copy': ['runtime/nvn/tegra.c', 'runtime/nvn/formats.c'],
         'test_tegra_block_height': ['runtime/nvn/tegra.c', 'runtime/nvn/formats.c'],
         'test_fibers': ['runtime/hle/fibers.c'],
-        'test_condvar': ['runtime/platform/windows.c', 'runtime/log.c', 'runtime/diag/diag.c', 'runtime/diag/sampler.c', '-lwinmm', '-ldbghelp'],
+        'test_condvar': ['runtime/ipc.c', 'runtime/platform/windows.c', 'runtime/log.c', 'runtime/diag/diag.c', 'runtime/diag/sampler.c', '-lwinmm', '-ldbghelp'],
         'test_foliage_distance': ['runtime/hle/foliage_distance.c'],
         'test_graphics_options': ['runtime/hle/graphics.c'],
         # [XCDE] T037: atomic save writes/commits; fs.c is included by the test.
@@ -153,7 +153,7 @@ def main():
         objects = []
         for source in [*(str(ROOT / 'third_party/imgui' / f) for f in files), str(ROOT / 'tools/launcher/launcher.cpp')]:
             obj = output / (Path(source).stem + '.o')
-            if run(Path(source).stem + '_build', [*compiler(True), '-O1', '-std=c++17', '-w', *includes(True), '-c', source, '-o', obj]):
+            if run(Path(source).stem + '_build', [*compiler(True), '-O3', '-std=c++17', '-w', *includes(True), '-c', source, '-o', obj]):
                 objects.append(obj)
         if len(objects) == len(files) + 1:
             icon_obj = output / 'monado_icon.o'

@@ -73,7 +73,8 @@ void kernel_timer_cancel(void *arg);  // drop the pending timers of `arg` (calle
 void kernel_timer_at(uint64_t when_vns, void (*fn)(void *), void *arg);  // caller holds g_klock; fn runs with g_klock held
 extern KThread *g_waitlist;
 
-KObject *handle_get(uint32_t h);
+KObject *kernel_session_acquire(uint32_t h);
+void kernel_session_release(KObject *session);
 uint32_t kernel_new_handle(KObject *o);
 void kernel_signal(KObject *o);  // caller holds g_klock
 KEvent *kernel_create_event_pair(uint32_t *writable, uint32_t *readable);

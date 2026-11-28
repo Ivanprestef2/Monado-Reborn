@@ -32,7 +32,7 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 # Optimisation level of the generated game code and the C runtime, and the profile-guided build (docs/guides/PGO.md, after
 # TotK Recomp's docs/pgo.md). MONADO_PGO=gen instruments both: the game adds its counts to build/pgo/raw/*.profraw
 # every minute and at exit; tools/build/pgo.py merge turns them into a .profdata. MONADO_PGO=<file.profdata> compiles with it.
-set(MONADO_OPT "O1" CACHE STRING "Optimisation level of the game code and the C runtime: O1 or O2 (a PGO build uses O2)")
+set(MONADO_OPT "O3" CACHE STRING "Optimisation level of the game code and runtime: O0, O1, O2 or O3")
 set(MONADO_PGO "" CACHE STRING "Profile-guided build: empty (off), gen (instrumented build), or a .profdata file")
 set(PGO_FLAGS)
 set(PGO_LINK)
@@ -52,16 +52,14 @@ elseif(MONADO_PGO)
   # MONADO_PGO_ID: the profile's digest on the command line. zig's compiler cache keys on the arguments and the
   # included files, not on the profile's contents, and would hand back objects built with an older profile.
   file(SHA256 "${MONADO_PGO_FILE}" _pgo_sha)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${MONADO_PGO_FILE}")
   string(SUBSTRING "${_pgo_sha}" 0 16 _pgo_id)
   set(PGO_FLAGS "-fprofile-use=${MONADO_PGO_FILE}" -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date
       -Wno-backend-plugin ${PGO_NAMES} -DMONADO_PGO_ID=${_pgo_id})
   set(PGO_DEPENDS "${MONADO_PGO_FILE}")
 endif()
-if(MONADO_PGO AND MONADO_OPT STREQUAL "O1")
-  set(MONADO_OPT O2)  # the profile's inlining and hot/cold layout work at -O2
-endif()
 if(NOT MONADO_OPT MATCHES "^O[0-3]$")
-  message(FATAL_ERROR "MONADO_OPT=${MONADO_OPT}: use O1 or O2")
+  message(FATAL_ERROR "MONADO_OPT=${MONADO_OPT}: use O0, O1, O2 or O3")
 endif()
 message(STATUS "game code and runtime: -${MONADO_OPT}, PGO: ${MONADO_PGO}")
 set(OPT -${MONADO_OPT} ${PGO_FLAGS})
@@ -88,6 +86,11 @@ endif()
 set(RT_SOURCES)
 if(MONADO_RELEASE)
   list(APPEND RT_UNITS gamelib)
+  file(GLOB GAMELIB_LIFTER_INPUTS CONFIGURE_DEPENDS "${ROOT}/tools/lifter/*.py")
+  execute_process(COMMAND "${Python3_EXECUTABLE}" tools/build/game_id.py --inputs WORKING_DIRECTORY "${ROOT}"
+                  OUTPUT_VARIABLE GAMELIB_INPUTS OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
+  string(REPLACE "\n" ";" GAMELIB_INPUTS "${GAMELIB_INPUTS}")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${GAMELIB_INPUTS} ${GAMELIB_LIFTER_INPUTS})
   # GAMELIB_ID: the fingerprint of the generator, guest headers and guest flags (tools/build/game_id.py). The first-start
   # builder stamps the library with the same one; the runtime loads no other.
   execute_process(COMMAND "${Python3_EXECUTABLE}" tools/build/game_id.py WORKING_DIRECTORY "${ROOT}"
@@ -159,7 +162,7 @@ if(WIN32)
   set(RT_WARN_FLAGS -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wno-sign-compare -Wno-format -Wno-unused-function)
   set(RT_C_FLAGS ${OPT} ${MARCH} -fno-strict-aliasing -fvisibility=hidden ${RT_WARN_FLAGS})
   set(RT_C_INCLUDES runtime runtime/nvn third_party "${MSYS2_PREFIX}/include")
-  set(CXX_FLAGS -std=c++17 -O1 ${MARCH} -fvisibility=hidden -w "SHELL:-idirafter \"${MSYS2_PREFIX}/include\"")
+  set(CXX_FLAGS -std=c++17 -${MONADO_OPT} ${MARCH} -fvisibility=hidden -w "SHELL:-idirafter \"${MSYS2_PREFIX}/include\"")
   # scripts/build_boot.sh CF (the game code)
   set(GAME_C_FLAGS ${OPT} ${MARCH} -ffp-contract=off -fno-strict-aliasing -fvisibility=hidden -w)
 
@@ -169,14 +172,6 @@ if(WIN32)
   target_compile_definitions(monado_rt PRIVATE "GAMELIB_ID=\"${GAMELIB_ID}\"")
   set_source_files_properties(runtime/host/main_boot.c PROPERTIES COMPILE_DEFINITIONS XCDE_GFX)
   set_source_files_properties(runtime/nvn/smaa_data.c PROPERTIES INCLUDE_DIRECTORIES "${GEN_INC};${ROOT}/third_party/smaa/Textures")
-  # [XCDE] T-RUNTIME-O2: hot Vulkan/kernel/platform/collision units get -O2 on Windows as well as Linux
-  set_source_files_properties(
-      runtime/nvn/vulkan/exec.c runtime/nvn/vulkan/textures.c runtime/nvn/vulkan/vkq.c
-      runtime/nvn/vulkan/device.c runtime/nvn/vulkan/post.c runtime/nvn/vulkan/temporal.c
-      runtime/nvn/cmdbuf.c runtime/nvn/objects.c
-      runtime/kernel.c runtime/dispatch.c runtime/platform/windows.c runtime/hle/collision_bvh.c
-      PROPERTIES COMPILE_OPTIONS -O2)
-
   add_library(monado_ui OBJECT ${UI_SOURCES})
   target_compile_options(monado_ui PRIVATE ${CXX_FLAGS})
   target_include_directories(monado_ui PRIVATE runtime runtime/nvn runtime/nvn/vulkan ${IMGUI} ${IMGUI}/backends)
@@ -184,7 +179,7 @@ if(WIN32)
   target_compile_options(monado_dlss PRIVATE ${CXX_FLAGS})
   target_include_directories(monado_dlss PRIVATE runtime runtime/nvn third_party/streamline/include)
   add_library(monado_vma OBJECT runtime/nvn/vulkan/vma.cpp)
-  target_compile_options(monado_vma PRIVATE ${CXX_FLAGS} -O2)
+  target_compile_options(monado_vma PRIVATE ${CXX_FLAGS})
 
   set(GAME_LINK_LIBS)
   foreach(l SDL3.dll shaderc_shared.dll vulkan-1.dll opus.dll avcodec.dll avformat.dll avutil.dll swscale.dll
@@ -223,7 +218,7 @@ if(WIN32)
   # tools/launcher/build.sh
   set(LAUNCHER_NAME xcde_launcher)
   list(APPEND LAUNCHER_SOURCES "${WIN_ICON_OBJ}")
-  set(LAUNCHER_FLAGS -O2 ${MARCH} -std=c++17 "SHELL:-idirafter \"${MSYS2_PREFIX}/include\"")
+  set(LAUNCHER_FLAGS -${MONADO_OPT} ${MARCH} -std=c++17 "SHELL:-idirafter \"${MSYS2_PREFIX}/include\"")
   set(LAUNCHER_WARN_FLAGS -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wno-sign-compare -Wno-format-security)
   set(LAUNCHER_LIBS "${MSYS2_PREFIX}/lib/libSDL3.dll.a" "${MSYS2_PREFIX}/lib/libvulkan-1.dll.a")
   set(LAUNCHER_LINK_OPTIONS ${MARCH} -Wl,--subsystem,windows -static-libstdc++)
@@ -280,14 +275,6 @@ else()
   target_include_directories(monado_rt PRIVATE ${LINUX_INCLUDES} third_party/smaa/Textures)
   target_compile_definitions(monado_rt PRIVATE "GAMELIB_ID=\"${GAMELIB_ID}\"" XCDE_GFX)
   target_link_libraries(monado_rt PRIVATE PkgConfig::DEPS)
-  # [XCDE] T-RUNTIME-O2: match Windows hot Vulkan/kernel/platform/collision -O2 list on Linux
-  set_source_files_properties(
-      runtime/nvn/vulkan/exec.c runtime/nvn/vulkan/textures.c runtime/nvn/vulkan/vkq.c
-      runtime/nvn/vulkan/device.c runtime/nvn/vulkan/post.c runtime/nvn/vulkan/temporal.c
-      runtime/nvn/cmdbuf.c runtime/nvn/objects.c
-      runtime/kernel.c runtime/dispatch.c runtime/platform/linux.c runtime/hle/collision_bvh.c
-      PROPERTIES COMPILE_OPTIONS -O2)
-
   add_library(monado_ui OBJECT ${UI_SOURCES} runtime/nvn/vulkan/dlss.cpp runtime/nvn/vulkan/vma.cpp)
   target_compile_options(monado_ui PRIVATE ${LINUX_FLAGS} -std=c++17)
   target_include_directories(monado_ui PRIVATE ${LINUX_INCLUDES} ${IMGUI} ${IMGUI}/backends third_party/streamline/include
@@ -306,7 +293,7 @@ else()
 
   # tools/launcher/build_linux.sh
   set(LAUNCHER_NAME monado-launcher)
-  set(LAUNCHER_FLAGS -O2 ${MARCH} -std=c++17 -D_GNU_SOURCE)
+  set(LAUNCHER_FLAGS -${MONADO_OPT} ${MARCH} -std=c++17 -D_GNU_SOURCE)
   set(LAUNCHER_WARN_FLAGS -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wno-sign-compare -Wno-format-security)
   set(LAUNCHER_LIBS PkgConfig::LAUNCHER_DEPS ${CMAKE_DL_LIBS})
   set(LAUNCHER_LINK_OPTIONS)

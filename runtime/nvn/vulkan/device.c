@@ -863,6 +863,8 @@ static int repeat_presents(void) {
 
 static uint32_t g_precompile_target_w, g_precompile_target_h;
 
+static VkSemaphore present_sem[sizeof g_vk.sc_images / sizeof g_vk.sc_images[0]];
+
 static void create_swapchain(void) {
     VkSurfaceCapabilitiesKHR caps;
     VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps));
@@ -891,7 +893,11 @@ static void create_swapchain(void) {
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, .presentMode = present_mode(), .clipped = VK_TRUE,
         .oldSwapchain = old};
     VK_CHECK(sc_create(g_vk.dev, &ci, NULL, &g_vk.swapchain));
-    for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
+    for (uint32_t i = 0; i < g_vk.sc_count; i++) {
+        vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
+        if (present_sem[i]) vkDestroySemaphore(g_vk.dev, present_sem[i], NULL);
+        present_sem[i] = VK_NULL_HANDLE;
+    }
     if (old) sc_destroy(g_vk.dev, old, NULL);
     static bool fg_tried;  // [XCDE] FSR 3 frame generation (temporal.c): AMD's swapchain replaces this one, once
     if (!fg_tried) {
@@ -933,27 +939,39 @@ static void recreate_swapchain(void) {
     vkq_drain();  // [XCDE] queued recording must finish before idle / reset
     extern void tmp_fg_wait_presents(void);
     tmp_fg_wait_presents();  // [XCDE] GitHub #265: drain FSR 3 FG async presents before device idle / swapchain destroy
-    sc_wait_idle(g_vk.dev);
+    VK_CHECK(sc_wait_idle(g_vk.dev));
     create_swapchain();
 }
 
 // ================================================================== frames (start screen and game)
 // Acquire semaphores rotate per frame in flight; a slot is reused once the submission that waited on it is done.
-// [XCDE] GitHub #265: present-done semaphores rotate across a deeper ring (DONE_SEMS) rather than per swapchain image
-// index: under FSR 3 frame generation + MAILBOX at high FPS, gameQueue can finish and re-acquire an image before AMD's
-// async presentQueue finishes waiting on that image's previous done_sem (re-signaling a pending binary semaphore wedges
-// the NVIDIA Vulkan driver in kernel mode).
 #define FRAMES 3
-#define DONE_SEMS 16
-static VkSemaphore acquire_sem[FRAMES], done_sem[DONE_SEMS];
+#define FG_PRESENT_SLOTS 16
+static VkSemaphore acquire_sem[FRAMES], fg_present_sem[FG_PRESENT_SLOTS];
 static uint64_t slot_seq[FRAMES];
-static int slot, done_slot;
+static int slot, fg_present_slot;
 
 static VkSemaphore binary_semaphore(void) {
     VkSemaphoreCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     VkSemaphore s;
     VK_CHECK(vkCreateSemaphore(g_vk.dev, &si, NULL, &s));
     return s;
+}
+
+static VkSemaphore present_semaphore(uint32_t image) {
+    extern bool tmp_fg_active(void);
+    extern void tmp_fg_wait_presents(void);
+    // [XCDE] Native acquisition orders reuse of that image's previous present wait.
+    VkSemaphore *sem = &present_sem[image];
+    if (tmp_fg_active()) {
+        // AMD's async proxy can reacquire an image before it consumes that wait.
+        // Drain the previous batch before wrapping its semaphore ring (#265).
+        if (!fg_present_slot && fg_present_sem[0]) tmp_fg_wait_presents();
+        sem = &fg_present_sem[fg_present_slot];
+        fg_present_slot = (fg_present_slot + 1) % FG_PRESENT_SLOTS;
+    }
+    if (!*sem) *sem = binary_semaphore();
+    return *sem;
 }
 
 static void image_barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImageLayout to) {
@@ -1076,16 +1094,14 @@ void vk_frame_end(const char *shot_path) {
     if (shot_path || hash_it) save_window_image(cb, &shot);
     image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     uint32_t img = cur_frame.image;
-    int ds = done_slot;
-    done_slot = (done_slot + 1) % DONE_SEMS;
-    if (!done_sem[ds]) done_sem[ds] = binary_semaphore();
+    VkSemaphore done = present_semaphore(img);
     uint64_t seq = vk_pending_seq();
-    vk_submit_extra(cur_frame.acquired, done_sem[ds], VK_NULL_HANDLE);
+    vk_submit_extra(cur_frame.acquired, done, VK_NULL_HANDLE);
     if (!g_repeat_present_active) {
         extern void xcde_present_pace_wait(void);
         xcde_present_pace_wait();
     }
-    VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &done_sem[ds],
+    VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &done,
                            .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
     extern void vk_rq_at(const char *where);
     extern const char *volatile g_rq_where;
@@ -1094,6 +1110,7 @@ void vk_frame_end(const char *shot_path) {
     VkResult r = sc_present(g_vk.queue, &pi);
     vk_rq_at(was_pr);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) recreate_swapchain();
+    else VK_CHECK(r);
     cur_frame.ok = false;
     if (shot_path || hash_it) {
         vk_wait_seq(seq);

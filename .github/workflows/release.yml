@@ -154,7 +154,7 @@ jobs:
         run: |
           .venv/bin/python tools/package/setup_linux_dlss.py
           # clang 19+: runtime/platform/linux.c checks __builtin_cpu_supports("cx16")
-          cmake --preset linux -B build/cmake/release -DMONADO_RELEASE=ON "-DMONADO_VERSION=${{ needs.version.outputs.version }}" -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19 -DMONADO_PGO=build/pgo/monado.profdata
+          cmake --preset linux -B build/cmake/release -DMONADO_RELEASE=ON -DMONADO_OPT=O3 "-DMONADO_VERSION=${{ needs.version.outputs.version }}" -DCMAKE_C_COMPILER=clang-19 -DCMAKE_CXX_COMPILER=clang++-19 -DMONADO_PGO=build/pgo/monado.profdata
           cmake --build build/cmake/release
           test -f build/linux/libmonado_fsr3.so || { echo "::error::native FSR 3 was not built"; exit 1; }
           test -f build/linux/libmonado_fsr4.so || { echo "::error::native FSR 4 Lite was not built"; exit 1; }
@@ -321,7 +321,7 @@ jobs:
       - name: Build the release runtime, launcher and FSR 4 Lite component
         run: |
           $env:PATH = "$PWD\.venv\Scripts;C:\msys64\ucrt64\bin;$env:PATH"
-          cmake --preset windows -B build/cmake/release -DMONADO_RELEASE=ON "-DMONADO_VERSION=${{ needs.version.outputs.version }}" "-DMONADO_PGO=build/pgo/monado.profdata"
+          cmake --preset windows -B build/cmake/release -DMONADO_RELEASE=ON -DMONADO_OPT=O3 "-DMONADO_VERSION=${{ needs.version.outputs.version }}" "-DMONADO_PGO=build/pgo/monado.profdata"
           cmake --build build/cmake/release
           foreach ($f in 'build/xcde.exe', 'build/xcde_launcher.exe', 'build/monado_fsr4.dll', 'build/gamebuild/xcde_imports.a') {
             if (-not (Test-Path $f)) { throw "missing $f" }

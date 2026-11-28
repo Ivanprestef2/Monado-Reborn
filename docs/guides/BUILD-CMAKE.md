@@ -24,6 +24,9 @@ python tools/build/gen_all.py --out generated     # Windows: .venv/Scripts/pytho
 
 CMake picks up the generated chunks by themselves, including chunks that appear or disappear after a generator change. Re-run `gen_all.py` after a new dump or patch change, then build.
 
+New CMake builds default to `-O3`. For an existing build directory with an older cached value, pass
+`-DMONADO_OPT=O3` on the next configure. Use `-DMONADO_OPT=O0`, `O1`, or `O2` to select another level.
+
 ### Windows (Git Bash or PowerShell)
 
 `tools/setup/setup_windows.ps1` installs `cmake` and `ninja` into `.venv` next to `ziglang`.

@@ -20,7 +20,7 @@ packages=(sdl3 vulkan shaderc opus libavcodec libavformat libavutil libswscale z
 pkg-config --print-errors --exists "${packages[@]}"
 read -r -a includes <<< "$(pkg-config --cflags "${packages[@]}")"
 # Same optimization, CPU baseline and FP/aliasing policy as scripts/build_rt_gfx.sh.
-flags=(-O1 -march=x86-64-v2 -ffp-contract=off -fno-strict-aliasing -fvisibility=hidden -D_GNU_SOURCE
+flags=(-O3 -march=x86-64-v2 -ffp-contract=off -fno-strict-aliasing -fvisibility=hidden -D_GNU_SOURCE
        -Iruntime -Iruntime/nvn -Ithird_party -Ibuild/inc "${includes[@]}" -DGAMELIB_ID='"dev"' -w)
 [[ -z ${VMA_INCLUDE_DIR:-} ]] || flags+=("-I$VMA_INCLUDE_DIR")
 printf '#if __has_include(<vma/vk_mem_alloc.h>)\n#include <vma/vk_mem_alloc.h>\n#else\n#include <vk_mem_alloc.h>\n#endif\n' \
@@ -56,11 +56,7 @@ for f in "${nvn[@]}"; do rt+=("nvn/$f"); done
 for f in "${rt[@]}"; do
   obj="$rtdir/${f//\//_}.o"
   echo "CC $f"
-  # [XCDE] T-RUNTIME-O2: the two Vulkan units that dominate the render thread's CPU time get -O2 (measured +5-9 %
-  # FPS on RADV); everything else, the game code and the FP / aliasing policy stay as they are.
-  unit_flags=()
-  case "$f" in nvn/vulkan/exec|nvn/vulkan/textures|hle/collision_bvh|dispatch) unit_flags=(-O2);; esac
-  "$CC" "${flags[@]}" "${unit_flags[@]}" -DXCDE_GFX -Ithird_party/smaa/Textures -c "runtime/$f.c" -o "$obj"
+  "$CC" "${flags[@]}" -DXCDE_GFX -Ithird_party/smaa/Textures -c "runtime/$f.c" -o "$obj"
   objects+=("$obj")
 done
 cpp=(third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp third_party/imgui/imgui_tables.cpp
@@ -92,7 +88,11 @@ for module in main sdk; do
   ((${#sources[@]})) || { echo "no generated $module sources" >&2; exit 1; }
   for f in "${sources[@]}"; do
     obj="build/linux/game/$module/$(basename "${f%.c}").o"
-    if [[ -f $obj && $obj -nt $f ]]; then objects+=("$obj"); continue; fi  # (unchanged chunk)
+    if [[ $obj -nt $f && $obj -nt scripts/build_linux.sh &&
+          $obj -nt runtime/cpu.h && $obj -nt runtime/simd.h && $obj -nt runtime/simd_fp.h ]]; then
+      objects+=("$obj")
+      continue
+    fi
     echo "GAME $f"
     ( tmp="$obj.$BASHPID.tmp"; trap 'rm -f "$tmp"' EXIT; "$CC" "${flags[@]}" -c "$f" -o "$tmp" && mv -f "$tmp" "$obj" ) &
     pending+=("$!")

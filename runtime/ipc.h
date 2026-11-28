@@ -44,6 +44,7 @@ struct Service {
 };
 
 typedef struct {
+    int refs;
     Service *objs[256];
 } Domain;
 
@@ -52,6 +53,8 @@ typedef struct {
     Service *svc;
     Domain *domain;  // shared by clones of a domain session
 } KSession;
+
+void ipc_session_destroy(KObject *object);
 
 // payload helpers
 #define IN(type, off) (*(const type *)(req->data + (off)))

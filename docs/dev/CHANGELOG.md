@@ -8,6 +8,19 @@ Keep the ledger in `tasks.md` (task id + status) and the runtime edit log in [`.
 Older session notes live in the archived handoffs under [`archive/`](archive/) and in the historical session sections
 of `tasks.md`; do not move them, they are the record.
 
+## 2026-11-28 — runtime reliability and build defaults (T283)
+
+- Stage save recovery and preserve the committed journal through failed restores. Allocate guest thread
+  IDs and TLS under the kernel lock. Release IPC service resources after the last session or domain reference.
+- Report RomFS I/O failures to the guest. Build sibling links in one pass. Keep working audio streams through
+  failed device changes and report settings-write failures in the overlay.
+- Associate native Vulkan present waits with acquired images. Drain the FSR 3 present queue before reusing its
+  semaphore ring. Correct AppImage skip-launcher checks and pass an explicit dump to the launcher.
+- Default to `-O3` for CMake builds, legacy builds, and packaged game-code builds. Make CMake reconfigure for ABI
+  changes. The first-start builder fingerprints input contents, locks its output folder, and stages its link.
+- Restore the SIMD differential harness and run it in Linux CI. Build SDL3 in CI so the Linux platform tests
+  are required. The published PGO profile is reused with the new default.
+
 ## 2026-11-20 — documentation cleanup (Phase 1)
 
 - Reorganized `docs/` into `adr/`, `contracts/`, `dev/`, `evidence/`, `guides/`, `history/`, `reference/` and

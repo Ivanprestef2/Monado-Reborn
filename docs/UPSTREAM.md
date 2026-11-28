@@ -3,6 +3,17 @@
 LASRecomp attribution is kept in LICENSE/NOTICE. This continuation does not incorporate code from GPL projects or
 game data.
 
+## 2026-11-28 — T283
+
+- `runtime/kernel.c`, `kernel.h`, `ipc.c`, and `ipc.h` allocate TLS under lock and release IPC sessions, domains,
+  and their service references, including closes through the kernel handle table.
+- `runtime/services/fs.c`, `romfs_virtual.c`, and `game_files.c` stage save recovery, report short asset reads,
+  and construct sibling chains in one pass. `runtime/services/am.c` shares ownership of applet storage.
+- `runtime/services/audio.c` and `audio_playback.h` own playback workers and replace streams after a successful
+  device open. `runtime/host/settings_ini.c`, `settings_boot.c`, `runtime/settings.h`, and `ui/menu_vk.cpp` report
+  settings-write failures to the overlay.
+- `runtime/nvn/vulkan/device.c` and `temporal_fg.inc` order reuse of present semaphores on both swapchain paths.
+
 ## 2026-11-04 — T247–T255
 
 - T247: `runtime/host/settings_ini.c`, `runtime/hle/bindings.c`; shared writer in `runtime/host/ini_writer.h` and `atomic_file.h`.

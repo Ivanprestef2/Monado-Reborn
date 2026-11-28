@@ -9,8 +9,8 @@ for f in $I/imgui.cpp $I/imgui_draw.cpp $I/imgui_tables.cpp $I/imgui_widgets.cpp
          $I/backends/imgui_impl_sdlrenderer3.cpp tools/launcher/launcher.cpp; do
   o=build/launcher/$(basename ${f%.cpp}).o
   # T248: shared runtime headers also affect the launcher; always rebuild its translation unit.
-  [ "$f" = tools/launcher/launcher.cpp ] || [ "$f" -nt "$o" ] || [ ! -f "$o" ] || continue
-  $Z -c $f -o $o -O2 -march=x86_64_v2 -std=c++17 "-DMONADO_VERSION=\"${MONADO_VERSION:-dev}\"" -I$I -I$I/backends -idirafter $M/include -w || exit 1
+  [ "$f" = tools/launcher/launcher.cpp ] || [ ! "$o" -nt "$f" ] || [ ! "$o" -nt tools/launcher/build.sh ] || continue
+  $Z -c $f -o $o -O3 -march=x86_64_v2 -std=c++17 "-DMONADO_VERSION=\"${MONADO_VERSION:-dev}\"" -I$I -I$I/backends -idirafter $M/include -w || exit 1
 done
 ICON_OBJ=build/launcher/monado_icon.o
 [ -f "$ICON_OBJ" ] && [ "$ICON_OBJ" -nt packaging/windows/monado.ico ] && [ "$ICON_OBJ" -nt tools/build/ico_to_coff.py ] || \

@@ -150,7 +150,7 @@ extern Settings g_settings;
 extern int g_window_w, g_window_h;  // [XCDE] windowed size (xcde.ini "window = WxH")
 
 void settings_load(void);
-void settings_save(void);
+bool settings_save(void);
 bool settings_read_game_dump(char *out, size_t cap);  // [XCDE] remembered dump folder/package from xcde.ini (game_dump)
 int settings_mod_priority(const char *name);  // [XCDE] lower index = applied earlier; later wins on conflict
 // The language code to serve the game ("es", "en-US", ...): the setting, or the host locale for LANG_AUTO

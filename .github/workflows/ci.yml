@@ -37,8 +37,11 @@ jobs:
       - name: Windows runtime components, launcher and native regressions
         run: python tools/diag/validate_port.py --build-ui
   linux-native:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CC: clang-19
+      SDL_TAG: release-3.4.8
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,6 +49,25 @@ jobs:
       - name: Install native test toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang pkg-config libvulkan-dev libvulkan-memory-allocator-dev libshaderc-dev
+          sudo apt-get install -y clang-19 ninja-build pkg-config libvulkan-dev libvulkan-memory-allocator-dev libshaderc-dev
+      - name: Build SDL3 for the platform tests
+        run: |
+          git clone --depth 1 --branch "$SDL_TAG" https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/SDL"
+          cmake -S "$RUNNER_TEMP/SDL" -B "$RUNNER_TEMP/SDL/build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/sdl3" -DCMAKE_INSTALL_LIBDIR=lib \
+            -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_STATIC=OFF -DSDL_UNIX_CONSOLE_BUILD=ON
+          cmake --build "$RUNNER_TEMP/SDL/build"
+          cmake --install "$RUNNER_TEMP/SDL/build"
+          echo "PKG_CONFIG_PATH=$RUNNER_TEMP/sdl3/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/sdl3/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
       - name: Run Linux native tests (no game data)
+        env:
+          MONADO_REQUIRE_NATIVE_DEPS: '1'
         run: bash scripts/native_tests_linux.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Differential SIMD tests against Unicorn (no game data)
+        run: |
+          python -m pip install capstone==5.0.9 unicorn==2.1.4 lz4==4.4.5
+          python tools/lifter/tests/test_simd.py --encodings 2000 --cases 4 --no-validity --jobs 4 --cflags=-march=x86-64-v2

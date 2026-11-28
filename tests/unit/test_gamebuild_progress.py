@@ -1,5 +1,6 @@
 """Game code builder: the launcher's progress file, the time-weighted bar and the default job count (no game data)."""
 import os
+import json
 import shutil
 import sys
 import tempfile
@@ -97,6 +98,66 @@ class DefaultJobs(unittest.TestCase):
         with mock.patch.object(gb.os, 'cpu_count', return_value=16), \
              mock.patch.object(gb, 'available_memory', return_value=None):
             self.assertEqual(gb.default_jobs(), 8)
+
+
+class BuildCache(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.dump = self.root / 'dump'
+        (self.dump / 'exefs').mkdir(parents=True)
+        self.main = self.dump / 'exefs/main'
+        self.main.write_bytes(b'one')
+        (self.dump / 'exefs/sdk').write_bytes(b'sdk')
+        self.resources = self.root / 'resources'
+        self.resources.mkdir()
+        (self.resources / 'gamelib-id.txt').write_text('sample-abi', encoding='utf-8')
+        self.imports = self.resources / 'imports.a'
+        self.imports.write_bytes(b'old')
+        self.link = {'library': 'lasgame.so', 'link_files': ['imports.a']}
+
+    def test_same_size_import_library_and_module_changes_invalidate(self):
+        before = gb.fingerprint(self.dump, self.resources, self.link)
+        self.imports.write_bytes(b'new')
+        after_imports = gb.fingerprint(self.dump, self.resources, self.link)
+        self.assertNotEqual(before, after_imports)
+
+        stamp = self.main.stat()
+        self.main.write_bytes(b'two')
+        os.utime(self.main, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        self.assertNotEqual(after_imports, gb.fingerprint(self.dump, self.resources, self.link))
+
+    @unittest.skipUnless(os.name == 'posix', 'exercise Linux advisory locking')
+    def test_competing_build_cannot_lock_the_same_output(self):
+        lock = self.root / '.build.lock'
+        with lock.open('a+b') as first, lock.open('a+b') as second:
+            gb.lock_build(first)
+            with self.assertRaises(BlockingIOError):
+                gb.lock_build(second)
+        with lock.open('a+b') as next_build:
+            gb.lock_build(next_build)
+
+    def test_strict_validation_runs_even_with_matching_build(self):
+        (self.resources / 'link.json').write_text(json.dumps(self.link), encoding='utf-8')
+        out = self.root / 'out'
+        out.mkdir()
+        (out / 'lasgame.so').touch()
+        (out / 'lasgame.so.id').write_text('sample-abi', encoding='utf-8')
+        current = gb.fingerprint(self.dump, self.resources, self.link)
+        (out / 'build.json').write_text(json.dumps({'fingerprint': current}), encoding='utf-8')
+        args = ['--root', str(self.dump), '--out', str(out), '--resources', str(self.resources), '--jobs', '1']
+        with mock.patch.object(gb, 'validate', side_effect=SystemExit('strict dump mismatch')) as validate:
+            with mock.patch('builtins.print'):
+                self.assertEqual(gb.main(args), 0)
+            validate.assert_not_called()
+            with self.assertRaisesRegex(SystemExit, 'strict dump mismatch'):
+                gb.main(args + ['--strict-dump'])
+            validate.assert_called_once()
+            dump, resources = validate.call_args.args
+            self.assertTrue(dump.samefile(self.dump))
+            self.assertTrue(resources.samefile(self.resources))
+            self.assertEqual(validate.call_args.kwargs, {'strict': True})
 
 
 if __name__ == '__main__':
