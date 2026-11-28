@@ -24,6 +24,66 @@ void diag_crash_report(void *ep) { (void)ep; }
 static int fails;
 #define CHECK(cond) do { if (!(cond)) { printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); fails++; } } while (0)
 
+typedef struct {
+    pthread_mutex_t *start;
+    uint64_t mapped[8];
+    uint64_t backing[8];
+    bool ok;
+} RegionWorker;
+
+static void *map_and_unmap(void *arg) {
+    RegionWorker *worker = arg;
+    uint64_t mapped = (uintptr_t)worker->mapped;
+    uint64_t backing = (uintptr_t)worker->backing;
+    uint64_t size = sizeof worker->mapped;
+    Cpu cpu = {0};
+    pthread_mutex_lock(worker->start);
+    pthread_mutex_unlock(worker->start);
+    for (int i = 0; i < 2000; i++) {
+        cpu.x[0] = mapped;
+        cpu.x[1] = backing;
+        cpu.x[2] = size;
+        svc_impl(&cpu, 0x04, 0);  // MapMemory
+
+        uint64_t info[5];
+        cpu.x[0] = (uintptr_t)info;
+        cpu.x[2] = mapped;
+        svc_impl(&cpu, 0x06, 0);  // QueryMemory
+        if (info[0] != mapped || info[1] != size || info[2] != 0xB) return NULL;
+
+        cpu.x[0] = mapped;
+        cpu.x[1] = backing;
+        cpu.x[2] = size;
+        svc_impl(&cpu, 0x05, 0);  // UnmapMemory
+    }
+    worker->ok = true;
+    return NULL;
+}
+
+static void test_concurrent_memory_map(void) {
+    enum { WORKERS = 8 };
+    RegionWorker *workers = calloc(WORKERS, sizeof *workers);
+    CHECK(workers != NULL);
+    if (!workers) return;
+    pthread_t threads[WORKERS];
+    pthread_mutex_t start = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&start);
+    int created = 0;
+    for (; created < WORKERS; created++) {
+        workers[created].start = &start;
+        if (pthread_create(&threads[created], NULL, map_and_unmap, &workers[created])) break;
+    }
+    pthread_mutex_unlock(&start);
+    CHECK(created == WORKERS);
+    for (int i = 0; i < created; i++) {
+        pthread_join(threads[i], NULL);
+        CHECK(workers[i].ok);
+    }
+    CHECK(nregions == 0);
+    pthread_mutex_destroy(&start);
+    free(workers);
+}
+
 int main(void) {
     static uint32_t mutex_word, key_word;
     KThread th; memset(&th, 0, sizeof th);
@@ -48,6 +108,8 @@ int main(void) {
     r = svc_wait_process_wide_key((uint64_t)(uintptr_t)&mutex_word, (uint64_t)(uintptr_t)&key_word, th.handle, 0);
     CHECK(r == R_TIMEOUT);
     CHECK(mutex_word == 0);
+
+    test_concurrent_memory_map();
 
     printf(fails ? "FAILED (%d)\n" : "OK\n", fails);
     return fails ? 1 : 0;

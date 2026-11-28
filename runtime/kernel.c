@@ -1,5 +1,6 @@
 // A small Horizon kernel: handles, threads, synchronization, memory, and the SVC dispatcher.
 #include "diag/diag.h"
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -159,22 +160,26 @@ typedef struct { uint64_t addr, size; uint32_t type, perm; } Region;
 // [XCDE] 16384 entries (was 1024): other runtimes passed a few thousand regions within minutes of play (WindowSmash
 // 2a7bb23: ~2,500 after one minute of menus, the 4,096 limit after ten minutes of matches). Entries are 24 bytes.
 #define MAX_REGIONS 16384
+// Region updates shift entries and change the count together. Readers must see the same snapshot.
+static pthread_mutex_t region_lock = PTHREAD_MUTEX_INITIALIZER;
 static Region regions[MAX_REGIONS];
 static int nregions;
-static uint64_t heap_size;
+static _Atomic uint64_t heap_size;
 static uint64_t tls_next = TLS_BASE;
-uint64_t kernel_heap_size(void) { return heap_size; }  // bytes from HEAP_BASE set by SetHeapSize
+uint64_t kernel_heap_size(void) { return atomic_load_explicit(&heap_size, memory_order_acquire); }
 // Writable guest data regions (heap, mapped/physical memory, module .data): for debug/runtime memory scans.
 int kernel_data_regions(uint64_t *addr, uint64_t *size, int max) {
     int n = 0;
+    pthread_mutex_lock(&region_lock);
     for (int i = 0; i < nregions && n < max; i++)
         if ((regions[i].perm & 2) && regions[i].type != 0xB && regions[i].type != 0xC) {
             addr[n] = regions[i].addr; size[n] = regions[i].size; n++;
         }
+    pthread_mutex_unlock(&region_lock);
     return n;
 }
 
-static void region_add(uint64_t addr, uint64_t size, uint32_t type, uint32_t perm) {
+static void region_add_locked(uint64_t addr, uint64_t size, uint32_t type, uint32_t perm) {
     if (nregions == MAX_REGIONS) FATAL("too many regions\n");
     if (nregions + 1 == 1024 || nregions + 1 == 4096 || nregions + 1 == 12000)  // (long-session growth shows in the log)
         LOG("[kernel] %d memory regions\n", nregions + 1);
@@ -184,7 +189,13 @@ static void region_add(uint64_t addr, uint64_t size, uint32_t type, uint32_t per
     regions[i] = (Region){addr, size, type, perm};
 }
 
-static void region_remove(uint64_t addr) {
+static void region_add(uint64_t addr, uint64_t size, uint32_t type, uint32_t perm) {
+    pthread_mutex_lock(&region_lock);
+    region_add_locked(addr, size, type, perm);
+    pthread_mutex_unlock(&region_lock);
+}
+
+static void region_remove_locked(uint64_t addr) {
     for (int i = 0; i < nregions; i++) {
         if (regions[i].addr == addr) {
             memmove(&regions[i], &regions[i + 1], (nregions - i - 1) * sizeof(Region));
@@ -194,9 +205,16 @@ static void region_remove(uint64_t addr) {
     }
 }
 
+static void region_remove(uint64_t addr) {
+    pthread_mutex_lock(&region_lock);
+    region_remove_locked(addr);
+    pthread_mutex_unlock(&region_lock);
+}
+
 static void query_memory(uint64_t addr, uint64_t out) {
     uint64_t prev_end = 0;
     uint64_t info[5] = {0};  // addr, size, type|attr<<32, perm|ipc<<32, device|pad<<32
+    pthread_mutex_lock(&region_lock);
     for (int i = 0; i < nregions; i++) {
         Region *r = &regions[i];
         if (addr >= r->addr && addr < r->addr + r->size) {
@@ -204,20 +222,20 @@ static void query_memory(uint64_t addr, uint64_t out) {
             info[1] = r->size;
             info[2] = r->type;
             info[3] = r->perm;
-            memcpy((void *)out, info, 0x28);
-            return;
+            goto copy_result;
         }
         if (addr < r->addr) {
             info[0] = prev_end;
             info[1] = r->addr - prev_end;
-            memcpy((void *)out, info, 0x28);
-            return;
+            goto copy_result;
         }
         prev_end = r->addr + r->size;
     }
     info[0] = prev_end;
     info[1] = (1ull << 39) - prev_end;
-    memcpy((void *)out, info, 0x28);
+copy_result:
+    pthread_mutex_unlock(&region_lock);
+    memcpy((void *)out, info, sizeof info);
 }
 
 // ------------------------------------------------------------------ threads
@@ -788,10 +806,12 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     case 0x01: {  // SetHeapSize
         uint64_t size = x[1];
         if (size > HEAP_MAX) { x[0] = R_OUT_OF_RESOURCE; break; }
-        heap_size = size;
         diag_use("mem", "SetHeapSize 0x%llx", (unsigned long long)size);
-        region_remove(HEAP_BASE);
-        if (size) region_add(HEAP_BASE, size, 5, 3);
+        pthread_mutex_lock(&region_lock);
+        region_remove_locked(HEAP_BASE);
+        if (size) region_add_locked(HEAP_BASE, size, 5, 3);
+        atomic_store_explicit(&heap_size, size, memory_order_release);
+        pthread_mutex_unlock(&region_lock);
         x[0] = R_OK;
         x[1] = HEAP_BASE;
         break;
@@ -986,7 +1006,7 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         case 4: v = HEAP_BASE; break;
         case 5: v = HEAP_MAX; break;
         case 6: case 21: v = 0xCD500000ull; break;  // application memory (3.2 GB, as on hardware)
-        case 7: case 22: v = heap_size + 0x4000000; break;
+        case 7: case 22: v = kernel_heap_size() + 0x4000000; break;
         case 8: v = 0; break;
         case 9: v = 0; break;
         case 11: v = diag_random64(); break;
@@ -1073,12 +1093,15 @@ void kernel_reset(void) {
     g_waitlist = NULL;
     g_syncwaiters = NULL;
     memset(handles, 0, sizeof handles);
-    nregions = 0;
-    heap_size = 0;
     tls_next = TLS_BASE;
     next_thread_id = 0x50;
     g_rt_unwind = 0;
     pthread_mutex_unlock(&g_klock);
+
+    pthread_mutex_lock(&region_lock);
+    nregions = 0;
+    atomic_store_explicit(&heap_size, 0, memory_order_release);
+    pthread_mutex_unlock(&region_lock);
 }
 
 void kernel_init(void) {
