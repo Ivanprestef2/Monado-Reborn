@@ -3433,6 +3433,7 @@ typedef struct {
     _Atomic int jobs;            // [XCDE] build / optimize jobs queued for it (eviction leaves it alone meanwhile)
     uint64_t last_used;          // [XCDE] frame of its last draw (eviction: the least recently drawn go first)
     void *libs[4];               // [XCDE] T242: a linked pipeline's libraries (GplLib *, referenced until it is destroyed)
+    bool lost_logged;
 } Pipe;
 
 // [XCDE] A draw that waited over 8 ms for its program or pipeline (a frame-time hitch): what it waited for. Program: ms
@@ -4175,8 +4176,9 @@ static void pw_log_key(const PipeKey *k, int n) {
     o += snprintf(b + o, sizeof b - o, "[vk] DRIVER CRASH #%d (divide by zero) in a pipeline: vs %llx fs %llx gs %d | ncolor %u color", n,
                   (unsigned long long)k->prog->code[0], (unsigned long long)k->prog->code[1], k->prog->gi != NULL, k->ncolor);
     for (uint32_t i = 0; i < k->ncolor && i < 8; i++) o += snprintf(b + o, sizeof b - o, " %d(mask %x blend %d)", (int)k->color[i], k->write_mask[i], (k->blend_on >> i) & 1);
-    o += snprintf(b + o, sizeof b - o, " | depth %d stencil %d | samples %u a2c %d | topo %d fill %d logic %d | no_fs %d | attrs %x streams %x |",
-                  (int)k->depth, (int)k->stencil, k->samples, k->a2c, k->topo_class, k->poly_fill, k->logic_op, k->prog->no_fs, k->attr_mask, k->used_streams);
+    o += snprintf(b + o, sizeof b - o, " | depth %d stencil %d | samples %u a2c %d | topo %d fill %d logic %d | no_fs %d writes_mem %d | attrs %x streams %x |",
+                  (int)k->depth, (int)k->stencil, k->samples, k->a2c, k->topo_class, k->poly_fill, k->logic_op, k->prog->no_fs,
+                  k->prog->writes_mem, k->attr_mask, k->used_streams);
     for (int s = 0; s < 17; s++) if (k->used_streams & (1u << s)) o += snprintf(b + o, sizeof b - o, " s%d(stride %u div %u)", s, k->stride[s], k->divisor[s]);
     o += snprintf(b + o, sizeof b - o, " | fmt");
     for (int i = 0; i < 32; i++) if (k->attr_mask & (1u << i)) o += snprintf(b + o, sizeof b - o, " a%d:%u@%u/b%u", i, k->attr_fmt[i], k->attr_off[i], k->attr_bind[i]);
@@ -8409,6 +8411,11 @@ static void draw_(CmdRec *r, bool indexed) {
     if (!pp_ok) {
         static int nlog2_;
         if (nlog2_++ < 8) LOG("[vk] pipeline not ready: state %d""%c", (int)atomic_load(&pp->state), 10);
+        if (pr->writes_mem && atomic_load(&pp->state) == 2 && !pp->lost_logged) {
+            pp->lost_logged = true;
+            LOG("[vk] memory-writing draw lost: its pipeline failed (vs %llx fs %llx)%c", (unsigned long long)pr->code[0],
+                (unsigned long long)pr->code[1], 10);
+        }
         SKIPPED(); return;
     }
     if (indexed) cliff_batch_pending = cliff_batch_try(r, pr);  // [XCDE] T-CLIFF-BATCH (generalized)
