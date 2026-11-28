@@ -2249,6 +2249,7 @@ static void glsl_rewrite(Ctx *c, Str *o, const char *src) {
 
 static const char glsl_prelude[] =
     "#version 460\n"
+    "#extension GL_EXT_spirv_intrinsics : require\n"
     "#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require\n"
     "#extension GL_KHR_shader_subgroup_basic : require\n"
     "#extension GL_KHR_shader_subgroup_shuffle : require\n"
@@ -2267,12 +2268,12 @@ static const char glsl_prelude[] =
     "int sx8(int v) { return bitfieldExtract(v, 0, 8); }\n"
     "int sx16(uint v) { return bitfieldExtract(int(v), 0, 16); }\n"
     "int sx16(int v) { return bitfieldExtract(v, 0, 16); }\n"
-    // [XCDE] Perf: hardware clamp/min/max avoid explicit isnan() branches and enable FMA+clamp folding on RDNA/NVIDIA.
-    // XCDE_SHADER_FAST_MATH=0 restores explicit isnan() wrappers if needed for debugging.
-    "float saturate(float x) { return clamp(x, 0.0f, 1.0f); }\n"
-    "vec2 saturate(vec2 x) { return clamp(x, vec2(0.0f), vec2(1.0f)); }\n"
-    "float fmin(float a, float b) { return min(a, b); }\n"
-    "float fmax(float a, float b) { return max(a, b); }\n"
+    "spirv_instruction(set = \"GLSL.std.450\", id = 79) float fmin(float a, float b);\n"
+    "spirv_instruction(set = \"GLSL.std.450\", id = 80) float fmax(float a, float b);\n"
+    "spirv_instruction(set = \"GLSL.std.450\", id = 81) float nclamp(float x, float lo, float hi);\n"
+    "spirv_instruction(set = \"GLSL.std.450\", id = 81) vec2 nclamp(vec2 x, vec2 lo, vec2 hi);\n"
+    "float saturate(float x) { return nclamp(x, 0.0f, 1.0f); }\n"
+    "vec2 saturate(vec2 x) { return nclamp(x, vec2(0.0f), vec2(1.0f)); }\n"
     "uint clz(uint v) { return v == 0u ? 32u : uint(31 - findMSB(v)); }\n"
     "uint popcount(uint v) { return uint(bitCount(v)); }\n"
     "uint mulhi(uint a, uint b) { uint hi, lo; umulExtended(a, b, hi, lo); return hi; }\n"
@@ -2330,7 +2331,8 @@ static const char glsl_fp16_hw[] =
 static const char glsl_fp16_native[] =
     "float h2f(uint h) { return unpackHalf2x16(h).x; }\n"
     "vec2 unpack_h2(uint v) { return unpackHalf2x16(v); }\n"
-    "f16vec2 saturate(f16vec2 x) { return clamp(x, f16vec2(0.0), f16vec2(1.0)); }\n"
+    "spirv_instruction(set = \"GLSL.std.450\", id = 81) f16vec2 nclamp(f16vec2 x, f16vec2 lo, f16vec2 hi);\n"
+    "f16vec2 saturate(f16vec2 x) { return nclamp(x, f16vec2(0.0), f16vec2(1.0)); }\n"
     "f16vec2 hx0(uint v) { return f16vec2(unpackHalf2x16(v)); }\n"
     "f16vec2 hx1(uint v) { return f16vec2(uintBitsToFloat(v)); }\n"
     "f16vec2 hx2(uint v) { return f16vec2(unpackHalf2x16(v)).xx; }\n"
