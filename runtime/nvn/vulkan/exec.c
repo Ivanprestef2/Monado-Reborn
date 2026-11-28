@@ -1186,6 +1186,22 @@ static Job *take_job(Job **head, Job **tail, pthread_mutex_t *lk, void *arg) {
     return j;
 }
 static uint64_t g_last_wait_ns;  // (the last wait_ready that waited: build-wait log)
+static void wait_nonzero(_Atomic int *flag, void *arg, bool builds) {
+    while (atomic_load(flag) == 0) {
+        Job *j = take_job(&tjobs_head, &tjobs_tail, &tjobs_lock, arg);
+        bool xl = j != NULL;
+        if (!j && builds && (j = take_job(&jobs_head, &jobs_tail, &jobs_lock, arg))) atomic_fetch_sub(&g_jobs_queued, 1);
+        if (j) { j->fn(j->arg); if (xl) atomic_fetch_sub(&g_xlat_queued, 1); free(j); build_done_notify(); continue; }
+        if (builds && (pw_npending || pl_npending || lv_npending)) prewarm_pump();  // (T163: a prewarmed pipeline waits there until its program is ready)
+        if (atomic_load(flag) != 0) break;
+        pthread_mutex_lock(&build_done_mu);
+        atomic_fetch_add_explicit(&g_build_waiters, 1, memory_order_seq_cst);
+        if (atomic_load_explicit(flag, memory_order_seq_cst) == 0)
+            pthread_cond_wait(&build_done_cv, &build_done_mu);
+        atomic_fetch_sub_explicit(&g_build_waiters, 1, memory_order_release);
+        pthread_mutex_unlock(&build_done_mu);
+    }
+}
 static bool wait_ready(_Atomic int *state, void *arg) {
     static int skip = -1;
     if (skip < 0) skip = getenv("LARECOMP_ASYNC_SKIP") != NULL;
@@ -1194,20 +1210,7 @@ static bool wait_ready(_Atomic int *state, void *arg) {
     uint64_t t0 = SDL_GetTicksNS();
     const char *was = g_rq_where;
     vk_rq_at("waiting for a shader / pipeline build");
-    while (atomic_load(state) == 0) {
-        Job *j = take_job(&tjobs_head, &tjobs_tail, &tjobs_lock, arg);
-        bool xl = j != NULL;
-        if (!j && (j = take_job(&jobs_head, &jobs_tail, &jobs_lock, arg))) atomic_fetch_sub(&g_jobs_queued, 1);
-        if (j) { j->fn(j->arg); if (xl) atomic_fetch_sub(&g_xlat_queued, 1); free(j); build_done_notify(); continue; }
-        if (pw_npending || pl_npending || lv_npending) prewarm_pump();  // (T163: a prewarmed pipeline waits there until its program is ready)
-        if (atomic_load(state) != 0) break;
-        pthread_mutex_lock(&build_done_mu);
-        atomic_fetch_add_explicit(&g_build_waiters, 1, memory_order_seq_cst);
-        if (atomic_load_explicit(state, memory_order_seq_cst) == 0)
-            pthread_cond_wait(&build_done_cv, &build_done_mu);
-        atomic_fetch_sub_explicit(&g_build_waiters, 1, memory_order_release);
-        pthread_mutex_unlock(&build_done_mu);
-    }
+    wait_nonzero(state, arg, true);
     if (tl_rq_worker) g_rq_where = was;
     stat_build_waits++;
     g_last_wait_ns = SDL_GetTicksNS() - t0;
@@ -2470,7 +2473,8 @@ static bool try_fast_flush_clear(void) {
     }
     memset(&pending_clear, 0, sizeof pending_clear);
     VkCommandBuffer cb = vk_cmd();
-    bool need_bar = false;
+    bool untracked = pass_untracked || pass_dirty || naliases;
+    bool need_bar = untracked;
     for (int i = 0; i < 8; i++) {
         if (!(pc.color_mask & (1u << i)) || i >= st.rt.ncolor || !st.rt.color[i]) continue;
         TexBackend *b = (TexBackend *)st.rt.color[i]->backend;
@@ -2482,7 +2486,8 @@ static bool try_fast_flush_clear(void) {
     }
     if (need_bar) {
         VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                               .srcStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                               .srcStageMask = untracked ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT
+                                                         : VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                                .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT,
                                .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                                .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT};
@@ -2539,7 +2544,6 @@ static bool try_fast_flush_clear(void) {
         VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
         vkCmdPipelineBarrier2(cb, &di);
     }
-    pass_untracked = false;
     stat_clear_saved++;
     return true;
 }
@@ -2647,6 +2651,8 @@ typedef struct {
     VkPipelineLayout layout;
     bool vs_uses_vid;
     bool has_images, has_image_writes, has_scaled_gather;
+    bool writes_mem;
+    _Atomic int translated;
     _Atomic int state;  // 0 building, 1 ready, 2 failed
     // [XCDE] build-wait log: when it was asked for, its translation job started / got the translator / ended, its
     // compile ended (ns), the SPIR-V the disk cache didn't have, whether prewarm asked for it
@@ -2973,14 +2979,11 @@ static void translate_program(void *arg) {
     if (trace_tr) LOG("[xlat] end   vs=%llx fs=%llx""%c", (unsigned long long)p->code[0], (unsigned long long)p->code[1], 10);
     xlat_unlock();
     p->t_x1 = SDL_GetTicksNS();
-    if (!p->vi->msl) {
-        LOG("[shader] VS translate failed: %s (code %llx)\n", p->vi->error, (unsigned long long)p->code[0]);
+    if (!p->vi->msl || !p->fi || !p->fi->msl) {
+        if (!p->vi->msl) LOG("[shader] VS translate failed: %s (code %llx)\n", p->vi->error, (unsigned long long)p->code[0]);
+        else if (p->fi) LOG("[shader] FS translate failed: %s\n", p->fi->error);
         atomic_store(&p->state, 2);
-        return;
-    }
-    if (!p->fi || !p->fi->msl) {
-        if (p->fi) LOG("[shader] FS translate failed: %s\n", p->fi->error);
-        atomic_store(&p->state, 2);
+        atomic_store_explicit(&p->translated, 1, memory_order_release);
         return;
     }
     p->vs_uses_vid = strstr(p->vi->msl, "gl_VertexIndex") != NULL;
@@ -3017,6 +3020,8 @@ static void translate_program(void *arg) {
         }
     }
     if (p->gi) save_glsl(p->gi->msl, p->gcode, "gs");
+    p->writes_mem = p->vi->uses_gmem_store || p->fi->uses_gmem_store || (p->gi && p->gi->uses_gmem_store) || p->has_image_writes;
+    atomic_store_explicit(&p->translated, 1, memory_order_release);
     run_job_ex(compile_program, p, !p->prewarmed);
 }
 
@@ -3081,6 +3086,18 @@ static inline __attribute__((always_inline)) uint8_t nvn_fmt_flags(uint32_t f) {
     return nvn_fmt_flags_slow(f);
 }
 
+static bool tex_entry_uint(NvnTexEntry *e) {
+    if (__builtin_expect(e->tex_uint_state != 0, 1)) return e->tex_uint_state == 2;
+    if (!e->tex) return false;
+    uint32_t f = e->has_view && (e->view.setmask & 4) ? e->view.format : e->tex->format;
+    uint32_t mode = e->has_view && (e->view.setmask & 16) ? e->view.ds_mode : e->tex->ds_mode;
+    bool u = (nvn_fmt_flags(f) & 1u) || ((nvn_fmt_flags(e->tex->format) & 2u) && mode == 1);
+    e->tex_uint_state = u ? 2 : 1;
+    return u;
+}
+
+static _Atomic bool g_tex_uint_stale;
+
 static uint32_t stencil_unit_mask(int stage) {
     if (!st.tpool) return 0;
     if (stage >= 0 && stage < 6 && !st.tex_uint_dirty[stage]) return st.tex_uint_mask[stage];
@@ -3088,7 +3105,7 @@ static uint32_t stencil_unit_mask(int stage) {
     if (trace_ds < 0) trace_ds = getenv("XCDE_TRACE_DS") != NULL;
     uint32_t mask = 0;
     uint32_t bound = (stage >= 0 && stage < 6) ? st.tex_bound_mask[stage] : 0xffffffffu;
-    const NvnTexEntry *entries = (const NvnTexEntry *)st.tpool->entries;
+    NvnTexEntry *entries = (NvnTexEntry *)st.tpool->entries;
     uint32_t tcount = (uint32_t)st.tpool->count;
     while (bound) {
         int u = __builtin_ctz(bound);
@@ -3096,20 +3113,17 @@ static uint32_t stencil_unit_mask(int stage) {
         uint64_t h = st.tex[stage][u];
         uint32_t tic = h & 0xFFFFF;
         if (!h || tic >= tcount) continue;
-        const NvnTexEntry *e = &entries[tic];
+        NvnTexEntry *e = &entries[tic];
         if (!e->tex) continue;
-        uint32_t f = e->has_view && (e->view.setmask & 4) ? e->view.format : e->tex->format;
-        if (nvn_fmt_flags(f) & 1u) { mask |= 1u << u; continue; }
-        if (!(nvn_fmt_flags(e->tex->format) & 2u)) continue;
-        uint32_t mode = e->has_view && (e->view.setmask & 16) ? e->view.ds_mode : e->tex->ds_mode;
-        if (trace_ds) {
+        if (trace_ds && (nvn_fmt_flags(e->tex->format) & 2u)) {
             static uint32_t seen[8]; static int n;
+            uint32_t mode = e->has_view && (e->view.setmask & 16) ? e->view.ds_mode : e->tex->ds_mode;
             uint32_t sig = e->tex->format << 8 | mode;
             bool dup = false;
             for (int i = 0; i < n; i++) dup |= seen[i] == sig;
             if (!dup && n < 8) { seen[n++] = sig; LOG("[ds] stage %d unit %d fmt %#x view %d mode %u (texture %u)\n", stage, u, e->tex->format, e->has_view ? (int)e->view.ds_mode : -1, mode, e->tex->ds_mode); }
         }
-        if (mode == 1) mask |= 1u << u;
+        if (tex_entry_uint(e)) mask |= 1u << u;
     }
     if (stage >= 0 && stage < 6) {
         st.tex_uint_mask[stage] = mask;
@@ -3429,6 +3443,7 @@ typedef struct {
     _Atomic int jobs;            // [XCDE] build / optimize jobs queued for it (eviction leaves it alone meanwhile)
     uint64_t last_used;          // [XCDE] frame of its last draw (eviction: the least recently drawn go first)
     void *libs[4];               // [XCDE] T242: a linked pipeline's libraries (GplLib *, referenced until it is destroyed)
+    bool lost_logged;
 } Pipe;
 
 // [XCDE] A draw that waited over 8 ms for its program or pipeline (a frame-time hitch): what it waited for. Program: ms
@@ -3474,11 +3489,18 @@ static uint32_t pipe_count(void) { return pipe_tab.n; }
 // target whose alpha isn't written, and the colour ones of a target whose RGB isn't written, give values that are
 // discarded - set to the NVN defaults (ONE, ZERO, ADD). XCDE_CANON=0: off.
 static inline void pipe_key_canon(PipeKey *k) {
+    if (g_vk.eds3) {
+        memset(k->write_mask, 0, sizeof k->write_mask);
+        k->blend_on = 0;
+        memset(k->blend, 0, sizeof k->blend);
+        k->poly_fill = 1;
+        return;
+    }
     static int on = -1;
     if (__builtin_expect(on < 0, 0)) on = !(getenv("XCDE_CANON") && atoi(getenv("XCDE_CANON")) == 0);
     if (__builtin_expect(!on, 0)) return;
     if (__builtin_expect(k->prog && k->prog->no_fs, 0)) {
-        memset(k->write_mask, 0, 8);
+        memset(k->write_mask, 0, sizeof k->write_mask);
         k->blend_on = 0;
         memset(k->blend, 0, sizeof k->blend);
         return;
@@ -4164,8 +4186,9 @@ static void pw_log_key(const PipeKey *k, int n) {
     o += snprintf(b + o, sizeof b - o, "[vk] DRIVER CRASH #%d (divide by zero) in a pipeline: vs %llx fs %llx gs %d | ncolor %u color", n,
                   (unsigned long long)k->prog->code[0], (unsigned long long)k->prog->code[1], k->prog->gi != NULL, k->ncolor);
     for (uint32_t i = 0; i < k->ncolor && i < 8; i++) o += snprintf(b + o, sizeof b - o, " %d(mask %x blend %d)", (int)k->color[i], k->write_mask[i], (k->blend_on >> i) & 1);
-    o += snprintf(b + o, sizeof b - o, " | depth %d stencil %d | samples %u a2c %d | topo %d fill %d logic %d | no_fs %d | attrs %x streams %x |",
-                  (int)k->depth, (int)k->stencil, k->samples, k->a2c, k->topo_class, k->poly_fill, k->logic_op, k->prog->no_fs, k->attr_mask, k->used_streams);
+    o += snprintf(b + o, sizeof b - o, " | depth %d stencil %d | samples %u a2c %d | topo %d fill %d logic %d | no_fs %d writes_mem %d | attrs %x streams %x |",
+                  (int)k->depth, (int)k->stencil, k->samples, k->a2c, k->topo_class, k->poly_fill, k->logic_op, k->prog->no_fs,
+                  k->prog->writes_mem, k->attr_mask, k->used_streams);
     for (int s = 0; s < 17; s++) if (k->used_streams & (1u << s)) o += snprintf(b + o, sizeof b - o, " s%d(stride %u div %u)", s, k->stride[s], k->divisor[s]);
     o += snprintf(b + o, sizeof b - o, " | fmt");
     for (int i = 0; i < 32; i++) if (k->attr_mask & (1u << i)) o += snprintf(b + o, sizeof b - o, " a%d:%u@%u/b%u", i, k->attr_fmt[i], k->attr_off[i], k->attr_bind[i]);
@@ -7673,6 +7696,25 @@ static bool menu_stage_draw(void) {
     return false;
 }
 
+static bool draw_must_complete(const CmdRec *r, bool indexed, bool xfb) {
+    if (xfb || st.raster_discard) return true;
+    if (!st.rt.ncolor || !st.rt.color[0]) return false;
+    if (renderer_texture_presented(st.rt.color[0])) return true;
+    uint32_t inst = (uint32_t)(indexed ? r->x[6] : r->x[4]);
+    return inst <= 1 && r->x[2] <= 6 && st.viewport[0][0] == 0 && st.viewport[0][1] == 0 &&
+           st.viewport[0][2] >= st.rt.color[0]->width && st.viewport[0][3] >= st.rt.color[0]->height;
+}
+
+static bool prog_wait(Prog *pr, bool must) {
+    if (!pr) return false;
+    uint64_t budget = must ? 0 : pipe_wait_budget_ns();
+    if (budget && atomic_load(&pr->state) == 0) {
+        wait_nonzero(&pr->translated, pr, false);
+        if (pr->writes_mem) budget = 0;
+    }
+    return budget ? wait_ready_budget(&pr->state, budget) : wait_ready(&pr->state, pr);
+}
+
 static void draw_(CmdRec *r, bool indexed) {
     cliff_batch_pending.draws = 1;  // [XCDE] T-CLIFF-BATCH
     mdi_batch_pending.draws = 1;
@@ -7774,18 +7816,8 @@ static void draw_(CmdRec *r, bool indexed) {
                 xfb = xfb_key(&vkey);
             }
         }
-        // [XCDE] Issue #261: keep UI/HUD/swapchain, fullscreen post-process quads, and XFB draws synchronous so
-        // async draw skipping never causes black flashes, missing HUD, or broken post-processing.
-        bool critical_prog = (st.rt.ncolor && st.rt.color[0] && renderer_texture_presented(st.rt.color[0])) || xfb != 0;
-        if (!critical_prog && st.rt.ncolor && st.rt.color[0]) {
-            uint32_t d_inst = (uint32_t)(indexed ? r->x[6] : r->x[4]);
-            if (d_inst <= 1 && r->x[2] <= 6 && st.viewport[0][0] == 0 && st.viewport[0][1] == 0 &&
-                st.viewport[0][2] >= st.rt.color[0]->width && st.viewport[0][3] >= st.rt.color[0]->height)
-                critical_prog = true;
-        }
         pr = get_program(st.program, &vkey, &fkey);
-        uint64_t prog_budget = critical_prog ? 0 : pipe_wait_budget_ns();
-        pr_ok = pr && (prog_budget ? wait_ready_budget(&pr->state, prog_budget) : wait_ready(&pr->state, pr));
+        pr_ok = prog_wait(pr, draw_must_complete(r, indexed, xfb));
         if (pr && g_last_wait_ns > build_wait_min()) build_wait_log(pr, NULL, g_last_wait_ns);
         if (pr_ok && !xfb) {
             l_np = st.program; l_pr = pr; l_vkey = vkey; l_fkey = fkey;
@@ -8349,7 +8381,7 @@ static void draw_(CmdRec *r, bool indexed) {
             if (st.poly[3] & 3) audit("polygon offset for point/line modes %#x ignored", st.poly[3]);
         }
         k.topo_class = cls;
-        k.poly_fill = g_vk.eds3 ? 1 : (st.poly[2] != 1);
+        k.poly_fill = st.poly[2] != 1;
         pipe_key_canon(&k);  // [XCDE] T195
         uint64_t ph = hash_words(0xcbf29ce484222325ull, &k, sizeof k);
         if (!ph) ph = 1;
@@ -8375,14 +8407,7 @@ static void draw_(CmdRec *r, bool indexed) {
             stat_pipe_rebuilt++;
         }
         pp->last_used = renderer_present_count();
-        bool critical_pipe = (st.rt.ncolor && st.rt.color[0] && renderer_texture_presented(st.rt.color[0])) || xfb != 0;
-        if (!critical_pipe && st.rt.ncolor && st.rt.color[0]) {
-            uint32_t d_inst = (uint32_t)(indexed ? r->x[6] : r->x[4]);
-            if (d_inst <= 1 && r->x[2] <= 6 && st.viewport[0][0] == 0 && st.viewport[0][1] == 0 &&
-                st.viewport[0][2] >= st.rt.color[0]->width && st.viewport[0][3] >= st.rt.color[0]->height)
-                critical_pipe = true;
-        }
-        uint64_t pipe_budget = critical_pipe ? 0 : pipe_wait_budget_ns();
+        uint64_t pipe_budget = (pr->writes_mem || draw_must_complete(r, indexed, xfb)) ? 0 : pipe_wait_budget_ns();
         if (pipe_budget) pp_ok = wait_ready_budget(&pp->state, pipe_budget);
         else { pp_ok = wait_ready(&pp->state, pp); pb_used_ns += g_last_wait_ns; }
         if (g_last_wait_ns > build_wait_min()) build_wait_log(NULL, pp, g_last_wait_ns);
@@ -8396,6 +8421,11 @@ static void draw_(CmdRec *r, bool indexed) {
     if (!pp_ok) {
         static int nlog2_;
         if (nlog2_++ < 8) LOG("[vk] pipeline not ready: state %d""%c", (int)atomic_load(&pp->state), 10);
+        if (pr->writes_mem && atomic_load(&pp->state) == 2 && !pp->lost_logged) {
+            pp->lost_logged = true;
+            LOG("[vk] memory-writing draw lost: its pipeline failed (vs %llx fs %llx)%c", (unsigned long long)pr->code[0],
+                (unsigned long long)pr->code[1], 10);
+        }
         SKIPPED(); return;
     }
     if (indexed) cliff_batch_pending = cliff_batch_try(r, pr);  // [XCDE] T-CLIFF-BATCH (generalized)
@@ -9813,25 +9843,8 @@ static void exec_list(uint64_t handle, int depth) {
                     uint32_t bit = 1u << u;
                     if (h) bm |= bit; else bm &= ~bit;
                     if (can_inc) {
-                        uint32_t is_u = 0;
                         uint32_t tic = (uint32_t)(h & 0xFFFFFu);
-                        if (h && tic < tcount) {
-                            NvnTexEntry *e = &entries[tic];
-                            uint8_t ts = e->tex_uint_state;
-                            if (__builtin_expect(ts != 0, 1)) {
-                                is_u = (ts == 2);
-                            } else if (e->tex) {
-                                uint32_t f = e->has_view && (e->view.setmask & 4) ? e->view.format : e->tex->format;
-                                if (nvn_fmt_flags(f) & 1u) {
-                                    is_u = 1;
-                                } else if (nvn_fmt_flags(e->tex->format) & 2u) {
-                                    uint32_t mode = e->has_view && (e->view.setmask & 16) ? e->view.ds_mode : e->tex->ds_mode;
-                                    if (mode == 1) is_u = 1;
-                                }
-                                e->tex_uint_state = (uint8_t)(is_u ? 2 : 1);
-                            }
-                        }
-                        if (is_u) um |= bit; else um &= ~bit;
+                        if (h && tic < tcount && tex_entry_uint(&entries[tic])) um |= bit; else um &= ~bit;
                     }
                 }
                 st.tex_bound_mask[stage] = bm;
@@ -10332,6 +10345,7 @@ static void pool_write_apply(const PoolWrite *w) {
         NvnTexEntry v;
         memcpy(&v, w->data, sizeof v);
         v.prev_target = e->tex ? e->tex->target : 0xff;
+        if (tex_entry_uint(e) != tex_entry_uint(&v)) atomic_store_explicit(&g_tex_uint_stale, true, memory_order_release);
         memcpy(e, &v, sizeof v);
     } else {
         memcpy(w->dst, w->data, w->n);
@@ -10510,6 +10524,10 @@ void backend_queue_destroy(NvnTexture *t) { rq_push(RJ_DESTROY, (uint64_t)(uintp
 
 void backend_execute(uint64_t handle) {
     split_since = 0;
+    if (atomic_exchange_explicit(&g_tex_uint_stale, false, memory_order_acquire)) {
+        memset(st.tex_uint_dirty, 1, sizeof st.tex_uint_dirty);
+        st.skey_gen = ++g_skey_gen;
+    }
     uint64_t exec_t0 = (prof || metrics_on) ? plat_now_ns() : 0;
     exec_list(handle, 0);
     if (prof || metrics_on) {

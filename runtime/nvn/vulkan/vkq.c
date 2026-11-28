@@ -623,6 +623,15 @@ static void q_exec(const QHdr *h) {
     default: FATAL("[vkq] bad record op %u\n", h->op);
     }
 }
+static void q_publish_read(uint64_t r) {
+    atomic_store_explicit(&q_r, r, memory_order_seq_cst);
+    if (__builtin_expect(atomic_load_explicit(&q_space_wait, memory_order_seq_cst) ||
+                         atomic_load_explicit(&q_drain_wait, memory_order_seq_cst), 0)) {
+        fast_mutex_lock(&q_dmu);
+        fast_cond_broadcast(&q_dcv);
+        fast_mutex_unlock(&q_dmu);
+    }
+}
 static void *q_main(void *arg) {
     (void)arg;
     plat_thread_name("vk-record");
@@ -630,12 +639,6 @@ static void *q_main(void *arg) {
     for (;;) {
         uint64_t w = atomic_load(&q_w);
         if (r == w) {
-            atomic_thread_fence(memory_order_seq_cst);   // (the q_r release store before the q_drain_wait load: Dekker with vkq_drain)
-            if (atomic_load(&q_drain_wait)) {
-                fast_mutex_lock(&q_dmu);
-                fast_cond_broadcast(&q_dcv);
-                fast_mutex_unlock(&q_dmu);
-            }
             for (int i = 0; i < q_spin && atomic_load(&q_w) == r; i++) q_pause();
             if (atomic_load(&q_w) == r) {
                 fast_mutex_lock(&q_mu);
@@ -660,21 +663,9 @@ static void *q_main(void *arg) {
             const QHdr *h = (const QHdr *)(q_buf + (r & (Q_SIZE - 1)));
             if (h->op != QOP_WRAP) q_exec(h);
             r += h->size;
-            if ((++batch & 31) == 0) {
-                atomic_store_explicit(&q_r, r, memory_order_release);
-                if (__builtin_expect(atomic_load_explicit(&q_space_wait, memory_order_acquire), 0)) {
-                    fast_mutex_lock(&q_dmu);
-                    fast_cond_broadcast(&q_dcv);
-                    fast_mutex_unlock(&q_dmu);
-                }
-            }
+            if ((++batch & 31) == 0) q_publish_read(r);
         }
-        atomic_store_explicit(&q_r, r, memory_order_release);
-        if (__builtin_expect(atomic_load_explicit(&q_space_wait, memory_order_acquire), 0)) {
-            fast_mutex_lock(&q_dmu);
-            fast_cond_broadcast(&q_dcv);
-            fast_mutex_unlock(&q_dmu);
-        }
+        q_publish_read(r);
         atomic_fetch_add(&q_stat_busy_ns, plat_now_ns() - t0);
     }
     return NULL;
