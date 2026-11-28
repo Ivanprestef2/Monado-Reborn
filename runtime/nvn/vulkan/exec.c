@@ -2473,7 +2473,8 @@ static bool try_fast_flush_clear(void) {
     }
     memset(&pending_clear, 0, sizeof pending_clear);
     VkCommandBuffer cb = vk_cmd();
-    bool need_bar = false;
+    bool untracked = pass_untracked || pass_dirty || naliases;
+    bool need_bar = untracked;
     for (int i = 0; i < 8; i++) {
         if (!(pc.color_mask & (1u << i)) || i >= st.rt.ncolor || !st.rt.color[i]) continue;
         TexBackend *b = (TexBackend *)st.rt.color[i]->backend;
@@ -2485,7 +2486,8 @@ static bool try_fast_flush_clear(void) {
     }
     if (need_bar) {
         VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                               .srcStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                               .srcStageMask = untracked ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT
+                                                         : VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                                .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT,
                                .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                                .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT};
@@ -2542,7 +2544,6 @@ static bool try_fast_flush_clear(void) {
         VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
         vkCmdPipelineBarrier2(cb, &di);
     }
-    pass_untracked = false;
     stat_clear_saved++;
     return true;
 }
