@@ -1186,6 +1186,22 @@ static Job *take_job(Job **head, Job **tail, pthread_mutex_t *lk, void *arg) {
     return j;
 }
 static uint64_t g_last_wait_ns;  // (the last wait_ready that waited: build-wait log)
+static void wait_nonzero(_Atomic int *flag, void *arg, bool builds) {
+    while (atomic_load(flag) == 0) {
+        Job *j = take_job(&tjobs_head, &tjobs_tail, &tjobs_lock, arg);
+        bool xl = j != NULL;
+        if (!j && builds && (j = take_job(&jobs_head, &jobs_tail, &jobs_lock, arg))) atomic_fetch_sub(&g_jobs_queued, 1);
+        if (j) { j->fn(j->arg); if (xl) atomic_fetch_sub(&g_xlat_queued, 1); free(j); build_done_notify(); continue; }
+        if (builds && (pw_npending || pl_npending || lv_npending)) prewarm_pump();  // (T163: a prewarmed pipeline waits there until its program is ready)
+        if (atomic_load(flag) != 0) break;
+        pthread_mutex_lock(&build_done_mu);
+        atomic_fetch_add_explicit(&g_build_waiters, 1, memory_order_seq_cst);
+        if (atomic_load_explicit(flag, memory_order_seq_cst) == 0)
+            pthread_cond_wait(&build_done_cv, &build_done_mu);
+        atomic_fetch_sub_explicit(&g_build_waiters, 1, memory_order_release);
+        pthread_mutex_unlock(&build_done_mu);
+    }
+}
 static bool wait_ready(_Atomic int *state, void *arg) {
     static int skip = -1;
     if (skip < 0) skip = getenv("LARECOMP_ASYNC_SKIP") != NULL;
@@ -1194,20 +1210,7 @@ static bool wait_ready(_Atomic int *state, void *arg) {
     uint64_t t0 = SDL_GetTicksNS();
     const char *was = g_rq_where;
     vk_rq_at("waiting for a shader / pipeline build");
-    while (atomic_load(state) == 0) {
-        Job *j = take_job(&tjobs_head, &tjobs_tail, &tjobs_lock, arg);
-        bool xl = j != NULL;
-        if (!j && (j = take_job(&jobs_head, &jobs_tail, &jobs_lock, arg))) atomic_fetch_sub(&g_jobs_queued, 1);
-        if (j) { j->fn(j->arg); if (xl) atomic_fetch_sub(&g_xlat_queued, 1); free(j); build_done_notify(); continue; }
-        if (pw_npending || pl_npending || lv_npending) prewarm_pump();  // (T163: a prewarmed pipeline waits there until its program is ready)
-        if (atomic_load(state) != 0) break;
-        pthread_mutex_lock(&build_done_mu);
-        atomic_fetch_add_explicit(&g_build_waiters, 1, memory_order_seq_cst);
-        if (atomic_load_explicit(state, memory_order_seq_cst) == 0)
-            pthread_cond_wait(&build_done_cv, &build_done_mu);
-        atomic_fetch_sub_explicit(&g_build_waiters, 1, memory_order_release);
-        pthread_mutex_unlock(&build_done_mu);
-    }
+    wait_nonzero(state, arg, true);
     if (tl_rq_worker) g_rq_where = was;
     stat_build_waits++;
     g_last_wait_ns = SDL_GetTicksNS() - t0;
@@ -2647,6 +2650,8 @@ typedef struct {
     VkPipelineLayout layout;
     bool vs_uses_vid;
     bool has_images, has_image_writes, has_scaled_gather;
+    bool writes_mem;
+    _Atomic int translated;
     _Atomic int state;  // 0 building, 1 ready, 2 failed
     // [XCDE] build-wait log: when it was asked for, its translation job started / got the translator / ended, its
     // compile ended (ns), the SPIR-V the disk cache didn't have, whether prewarm asked for it
@@ -2973,14 +2978,11 @@ static void translate_program(void *arg) {
     if (trace_tr) LOG("[xlat] end   vs=%llx fs=%llx""%c", (unsigned long long)p->code[0], (unsigned long long)p->code[1], 10);
     xlat_unlock();
     p->t_x1 = SDL_GetTicksNS();
-    if (!p->vi->msl) {
-        LOG("[shader] VS translate failed: %s (code %llx)\n", p->vi->error, (unsigned long long)p->code[0]);
+    if (!p->vi->msl || !p->fi || !p->fi->msl) {
+        if (!p->vi->msl) LOG("[shader] VS translate failed: %s (code %llx)\n", p->vi->error, (unsigned long long)p->code[0]);
+        else if (p->fi) LOG("[shader] FS translate failed: %s\n", p->fi->error);
         atomic_store(&p->state, 2);
-        return;
-    }
-    if (!p->fi || !p->fi->msl) {
-        if (p->fi) LOG("[shader] FS translate failed: %s\n", p->fi->error);
-        atomic_store(&p->state, 2);
+        atomic_store_explicit(&p->translated, 1, memory_order_release);
         return;
     }
     p->vs_uses_vid = strstr(p->vi->msl, "gl_VertexIndex") != NULL;
@@ -3017,6 +3019,8 @@ static void translate_program(void *arg) {
         }
     }
     if (p->gi) save_glsl(p->gi->msl, p->gcode, "gs");
+    p->writes_mem = p->vi->uses_gmem_store || p->fi->uses_gmem_store || (p->gi && p->gi->uses_gmem_store) || p->has_image_writes;
+    atomic_store_explicit(&p->translated, 1, memory_order_release);
     run_job_ex(compile_program, p, !p->prewarmed);
 }
 
@@ -7673,6 +7677,25 @@ static bool menu_stage_draw(void) {
     return false;
 }
 
+static bool draw_must_complete(const CmdRec *r, bool indexed, bool xfb) {
+    if (xfb || st.raster_discard) return true;
+    if (!st.rt.ncolor || !st.rt.color[0]) return false;
+    if (renderer_texture_presented(st.rt.color[0])) return true;
+    uint32_t inst = (uint32_t)(indexed ? r->x[6] : r->x[4]);
+    return inst <= 1 && r->x[2] <= 6 && st.viewport[0][0] == 0 && st.viewport[0][1] == 0 &&
+           st.viewport[0][2] >= st.rt.color[0]->width && st.viewport[0][3] >= st.rt.color[0]->height;
+}
+
+static bool prog_wait(Prog *pr, bool must) {
+    if (!pr) return false;
+    uint64_t budget = must ? 0 : pipe_wait_budget_ns();
+    if (budget && atomic_load(&pr->state) == 0) {
+        wait_nonzero(&pr->translated, pr, false);
+        if (pr->writes_mem) budget = 0;
+    }
+    return budget ? wait_ready_budget(&pr->state, budget) : wait_ready(&pr->state, pr);
+}
+
 static void draw_(CmdRec *r, bool indexed) {
     cliff_batch_pending.draws = 1;  // [XCDE] T-CLIFF-BATCH
     mdi_batch_pending.draws = 1;
@@ -7774,18 +7797,8 @@ static void draw_(CmdRec *r, bool indexed) {
                 xfb = xfb_key(&vkey);
             }
         }
-        // [XCDE] Issue #261: keep UI/HUD/swapchain, fullscreen post-process quads, and XFB draws synchronous so
-        // async draw skipping never causes black flashes, missing HUD, or broken post-processing.
-        bool critical_prog = (st.rt.ncolor && st.rt.color[0] && renderer_texture_presented(st.rt.color[0])) || xfb != 0;
-        if (!critical_prog && st.rt.ncolor && st.rt.color[0]) {
-            uint32_t d_inst = (uint32_t)(indexed ? r->x[6] : r->x[4]);
-            if (d_inst <= 1 && r->x[2] <= 6 && st.viewport[0][0] == 0 && st.viewport[0][1] == 0 &&
-                st.viewport[0][2] >= st.rt.color[0]->width && st.viewport[0][3] >= st.rt.color[0]->height)
-                critical_prog = true;
-        }
         pr = get_program(st.program, &vkey, &fkey);
-        uint64_t prog_budget = critical_prog ? 0 : pipe_wait_budget_ns();
-        pr_ok = pr && (prog_budget ? wait_ready_budget(&pr->state, prog_budget) : wait_ready(&pr->state, pr));
+        pr_ok = prog_wait(pr, draw_must_complete(r, indexed, xfb));
         if (pr && g_last_wait_ns > build_wait_min()) build_wait_log(pr, NULL, g_last_wait_ns);
         if (pr_ok && !xfb) {
             l_np = st.program; l_pr = pr; l_vkey = vkey; l_fkey = fkey;
@@ -8375,14 +8388,7 @@ static void draw_(CmdRec *r, bool indexed) {
             stat_pipe_rebuilt++;
         }
         pp->last_used = renderer_present_count();
-        bool critical_pipe = (st.rt.ncolor && st.rt.color[0] && renderer_texture_presented(st.rt.color[0])) || xfb != 0;
-        if (!critical_pipe && st.rt.ncolor && st.rt.color[0]) {
-            uint32_t d_inst = (uint32_t)(indexed ? r->x[6] : r->x[4]);
-            if (d_inst <= 1 && r->x[2] <= 6 && st.viewport[0][0] == 0 && st.viewport[0][1] == 0 &&
-                st.viewport[0][2] >= st.rt.color[0]->width && st.viewport[0][3] >= st.rt.color[0]->height)
-                critical_pipe = true;
-        }
-        uint64_t pipe_budget = critical_pipe ? 0 : pipe_wait_budget_ns();
+        uint64_t pipe_budget = (pr->writes_mem || draw_must_complete(r, indexed, xfb)) ? 0 : pipe_wait_budget_ns();
         if (pipe_budget) pp_ok = wait_ready_budget(&pp->state, pipe_budget);
         else { pp_ok = wait_ready(&pp->state, pp); pb_used_ns += g_last_wait_ns; }
         if (g_last_wait_ns > build_wait_min()) build_wait_log(NULL, pp, g_last_wait_ns);
