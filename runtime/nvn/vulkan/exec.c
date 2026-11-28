@@ -3086,6 +3086,18 @@ static inline __attribute__((always_inline)) uint8_t nvn_fmt_flags(uint32_t f) {
     return nvn_fmt_flags_slow(f);
 }
 
+static bool tex_entry_uint(NvnTexEntry *e) {
+    if (__builtin_expect(e->tex_uint_state != 0, 1)) return e->tex_uint_state == 2;
+    if (!e->tex) return false;
+    uint32_t f = e->has_view && (e->view.setmask & 4) ? e->view.format : e->tex->format;
+    uint32_t mode = e->has_view && (e->view.setmask & 16) ? e->view.ds_mode : e->tex->ds_mode;
+    bool u = (nvn_fmt_flags(f) & 1u) || ((nvn_fmt_flags(e->tex->format) & 2u) && mode == 1);
+    e->tex_uint_state = u ? 2 : 1;
+    return u;
+}
+
+static _Atomic bool g_tex_uint_stale;
+
 static uint32_t stencil_unit_mask(int stage) {
     if (!st.tpool) return 0;
     if (stage >= 0 && stage < 6 && !st.tex_uint_dirty[stage]) return st.tex_uint_mask[stage];
@@ -3093,7 +3105,7 @@ static uint32_t stencil_unit_mask(int stage) {
     if (trace_ds < 0) trace_ds = getenv("XCDE_TRACE_DS") != NULL;
     uint32_t mask = 0;
     uint32_t bound = (stage >= 0 && stage < 6) ? st.tex_bound_mask[stage] : 0xffffffffu;
-    const NvnTexEntry *entries = (const NvnTexEntry *)st.tpool->entries;
+    NvnTexEntry *entries = (NvnTexEntry *)st.tpool->entries;
     uint32_t tcount = (uint32_t)st.tpool->count;
     while (bound) {
         int u = __builtin_ctz(bound);
@@ -3101,20 +3113,17 @@ static uint32_t stencil_unit_mask(int stage) {
         uint64_t h = st.tex[stage][u];
         uint32_t tic = h & 0xFFFFF;
         if (!h || tic >= tcount) continue;
-        const NvnTexEntry *e = &entries[tic];
+        NvnTexEntry *e = &entries[tic];
         if (!e->tex) continue;
-        uint32_t f = e->has_view && (e->view.setmask & 4) ? e->view.format : e->tex->format;
-        if (nvn_fmt_flags(f) & 1u) { mask |= 1u << u; continue; }
-        if (!(nvn_fmt_flags(e->tex->format) & 2u)) continue;
-        uint32_t mode = e->has_view && (e->view.setmask & 16) ? e->view.ds_mode : e->tex->ds_mode;
-        if (trace_ds) {
+        if (trace_ds && (nvn_fmt_flags(e->tex->format) & 2u)) {
             static uint32_t seen[8]; static int n;
+            uint32_t mode = e->has_view && (e->view.setmask & 16) ? e->view.ds_mode : e->tex->ds_mode;
             uint32_t sig = e->tex->format << 8 | mode;
             bool dup = false;
             for (int i = 0; i < n; i++) dup |= seen[i] == sig;
             if (!dup && n < 8) { seen[n++] = sig; LOG("[ds] stage %d unit %d fmt %#x view %d mode %u (texture %u)\n", stage, u, e->tex->format, e->has_view ? (int)e->view.ds_mode : -1, mode, e->tex->ds_mode); }
         }
-        if (mode == 1) mask |= 1u << u;
+        if (tex_entry_uint(e)) mask |= 1u << u;
     }
     if (stage >= 0 && stage < 6) {
         st.tex_uint_mask[stage] = mask;
@@ -9834,25 +9843,8 @@ static void exec_list(uint64_t handle, int depth) {
                     uint32_t bit = 1u << u;
                     if (h) bm |= bit; else bm &= ~bit;
                     if (can_inc) {
-                        uint32_t is_u = 0;
                         uint32_t tic = (uint32_t)(h & 0xFFFFFu);
-                        if (h && tic < tcount) {
-                            NvnTexEntry *e = &entries[tic];
-                            uint8_t ts = e->tex_uint_state;
-                            if (__builtin_expect(ts != 0, 1)) {
-                                is_u = (ts == 2);
-                            } else if (e->tex) {
-                                uint32_t f = e->has_view && (e->view.setmask & 4) ? e->view.format : e->tex->format;
-                                if (nvn_fmt_flags(f) & 1u) {
-                                    is_u = 1;
-                                } else if (nvn_fmt_flags(e->tex->format) & 2u) {
-                                    uint32_t mode = e->has_view && (e->view.setmask & 16) ? e->view.ds_mode : e->tex->ds_mode;
-                                    if (mode == 1) is_u = 1;
-                                }
-                                e->tex_uint_state = (uint8_t)(is_u ? 2 : 1);
-                            }
-                        }
-                        if (is_u) um |= bit; else um &= ~bit;
+                        if (h && tic < tcount && tex_entry_uint(&entries[tic])) um |= bit; else um &= ~bit;
                     }
                 }
                 st.tex_bound_mask[stage] = bm;
@@ -10353,6 +10345,7 @@ static void pool_write_apply(const PoolWrite *w) {
         NvnTexEntry v;
         memcpy(&v, w->data, sizeof v);
         v.prev_target = e->tex ? e->tex->target : 0xff;
+        if (tex_entry_uint(e) != tex_entry_uint(&v)) atomic_store_explicit(&g_tex_uint_stale, true, memory_order_release);
         memcpy(e, &v, sizeof v);
     } else {
         memcpy(w->dst, w->data, w->n);
@@ -10531,6 +10524,10 @@ void backend_queue_destroy(NvnTexture *t) { rq_push(RJ_DESTROY, (uint64_t)(uintp
 
 void backend_execute(uint64_t handle) {
     split_since = 0;
+    if (atomic_exchange_explicit(&g_tex_uint_stale, false, memory_order_acquire)) {
+        memset(st.tex_uint_dirty, 1, sizeof st.tex_uint_dirty);
+        st.skey_gen = ++g_skey_gen;
+    }
     uint64_t exec_t0 = (prof || metrics_on) ? plat_now_ns() : 0;
     exec_list(handle, 0);
     if (prof || metrics_on) {
