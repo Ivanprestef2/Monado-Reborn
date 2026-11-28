@@ -7,7 +7,8 @@
 // footprint at any render scale (identical taps at native scale). The default also weights each tap by
 // 1/(1+luma) (Karis average), so one isolated glint cannot dominate its bloom texel ("fireflies") while
 // broad highlights, whose taps share similar weights, keep their bloom.
-// XCDE_BLOOM_PREFILTER=0 restores the game's filter, =1 keeps the full footprint without the weighting.
+// XCDE_BLOOM_PREFILTER=0 restores the game's filter, =1 keeps the full footprint without the weighting,
+// =3 keeps the weighting and footprint but uses at most four taps per axis at high render scales.
 #pragma once
 #define MONADO_BLOOM_PREFILTER_BODY \
     "layout(location=0) in vec4 v0;\n" \
@@ -24,7 +25,7 @@
     " vec2 d=0.5*vec2(max(max(ox.x,ox.y),max(ox.z,ox.w))-min(min(ox.x,ox.y),min(ox.z,ox.w)),\n" \
     "                 max(max(oy.x,oy.y),max(oy.z,oy.w))-min(min(oy.x,oy.y),min(oy.z,oy.w)));\n" \
     " vec2 fp=4.0*d*vec2(textureSize(t0,0));\n" \
-    " ivec2 n=clamp(ivec2(ceil(fp*0.5-0.01)),ivec2(1),ivec2(8));\n" \
+    " ivec2 n=clamp(ivec2(ceil(fp*0.5-0.01)),ivec2(1),ivec2(MAX_TAPS));\n" \
     " vec2 st=4.0*d/vec2(n), o=ctr-2.0*d+0.5*st;\n" \
     " vec4 s0=vec4(0.0), s1=vec4(0.0);\n" \
     " float w0=0.0;\n" \
@@ -50,5 +51,6 @@
     " c0=vec4(m*(1.0/fma(l,K(1,3),1.0)),max(al,g.a));\n" \
     "}\n"
 
-static const char monado_bloom_prefilter_karis_glsl[] = "#version 460\n#define KARIS 1\n" MONADO_BLOOM_PREFILTER_BODY;
-static const char monado_bloom_prefilter_box_glsl[] = "#version 460\n" MONADO_BLOOM_PREFILTER_BODY;
+static const char monado_bloom_prefilter_karis_glsl[] = "#version 460\n#define KARIS 1\n#define MAX_TAPS 8\n" MONADO_BLOOM_PREFILTER_BODY;
+static const char monado_bloom_prefilter_box_glsl[] = "#version 460\n#define MAX_TAPS 8\n" MONADO_BLOOM_PREFILTER_BODY;
+static const char monado_bloom_prefilter_capped_glsl[] = "#version 460\n#define KARIS 1\n#define MAX_TAPS 4\n" MONADO_BLOOM_PREFILTER_BODY;

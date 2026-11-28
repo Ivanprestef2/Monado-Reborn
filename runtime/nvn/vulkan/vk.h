@@ -43,7 +43,8 @@ typedef struct {
     VkSemaphore timeline;      // value = last completed submission number
     VkCommandPool pool;        // render thread only
     bool custom_border, divisor, host_import, robust2, logic_op, minmax;
-    bool multi_draw_indirect, draw_indirect_first_instance;
+    bool multi_draw_indirect, draw_indirect_first_instance, draw_indirect_count;
+    bool draw_material_indexing;
     bool sampler_anisotropy;  // [XCDE] the enabled samplerAnisotropy feature (texture filtering option)
     bool dmabuf_import;  // [XCDE] T-LINUX-GTT: VK_KHR_external_memory_fd + VK_EXT_external_memory_dma_buf
     bool feedback_loop;  // [XCDE] VK_EXT_attachment_feedback_loop_layout (#7): colour attachments sampled by the draw that writes them
@@ -159,6 +160,7 @@ typedef struct TexBackend {
 } TexBackend;
 
 TexBackend *vk_tex(NvnTexture *t, bool for_render);  // backend image (uploads CPU contents unless for_render)
+bool vk_texture_sample_ready(const TexBackend *b);
 void vk_texture_gone(NvnTexture *t);  // [XCDE] issue #25: drop snapshot caches for a freed texture
 // [XCDE] issue #7: AMD RDNA 3 only (Navi 31/32/33 + Phoenix1/Phoenix2 iGPUs).
 // Everything else (RDNA 1/2/4, Vega, NVIDIA, Intel) returns false.

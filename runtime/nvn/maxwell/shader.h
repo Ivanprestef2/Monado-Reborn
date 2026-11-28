@@ -98,6 +98,7 @@ typedef struct {
     uint32_t local_mem;     // bytes of local memory
     uint32_t num_insts;
     char error[256];        // set when translation fails
+    bool xfb_only_store;    // GLSL: the generated transform-feedback epilogue is the only guest heap writer
 } ShaderInfo;
 
 // Global memory (LDG/STG) is addressed through one buffer that wraps the guest heap.
@@ -111,6 +112,7 @@ typedef struct {
 #define GMAP_MAX 16  // ranges in the table (GMap { uvec4 gmap[GMAP_MAX + 1]; }: [i] = addr lo, addr hi, size, word offset;
                      // [GMAP_MAX].x = count)
 extern _Thread_local uint64_t maxwell_gmem_base, maxwell_gmem_size;  // [XCDE] T281: per translating thread
+extern _Thread_local bool maxwell_vertex_address32;
 extern bool maxwell_native_fp16;  // [XCDE] Vulkan shaderFloat16 supported: emit f16vec2 arithmetic in FS/CS
 // Debug: when translating the shader whose code starts at maxwell_dbg_code, output register
 // maxwell_dbg_reg as captured after the instruction at maxwell_dbg_pc (greyscale, all targets).

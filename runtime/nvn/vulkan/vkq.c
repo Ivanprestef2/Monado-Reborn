@@ -22,7 +22,7 @@
 static uint64_t q_size = 4ull << 20;
 #define Q_SIZE q_size
 enum {
-    QOP_WRAP, QOP_BEGIN, QOP_END, QOP_DRAW, QOP_DRAWIDX, QOP_DRAWIDX_IND, QOP_DISPATCH, QOP_PIPE, QOP_SETS, QOP_PUSH, QOP_VBUF, QOP_IBUF,
+    QOP_WRAP, QOP_BEGIN, QOP_END, QOP_DRAW, QOP_DRAWIDX, QOP_DRAWIDX_IND, QOP_DRAWIDX_IND_COUNT, QOP_DISPATCH, QOP_PIPE, QOP_SETS, QOP_PUSH, QOP_VBUF, QOP_IBUF,
     QOP_POLYMODE, QOP_BLENDE, QOP_BLENDEQ, QOP_WMASK,
     QOP_VIEWPORT, QOP_SCISSOR, QOP_BLENDC, QOP_DBIAS, QOP_DBIAS_EN, QOP_DTEST, QOP_DWRITE, QOP_DCMP, QOP_STEST, QOP_SOP, QOP_SCMASK,
     QOP_SWMASK, QOP_SREF, QOP_CULL, QOP_FRONT, QOP_TOPO, QOP_RESTART, QOP_BEGINR, QOP_ENDR, QOP_BARRIER, QOP_CPBUF, QOP_CPIMG,
@@ -204,6 +204,21 @@ typedef struct { VkBuffer buf; VkDeviceSize off; uint32_t count, stride; } QDraw
 void q_vkCmdDrawIndexedIndirect(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off, uint32_t count, uint32_t stride) {
     if (!vkq_enabled()) { (vkCmdDrawIndexedIndirect)(cb, buf, off, count, stride); return; }
     QREC(QOP_DRAWIDX_IND, cb, QDrawInd); a->buf = buf; a->off = off; a->count = count; a->stride = stride; q_commit();
+}
+typedef struct {
+    VkBuffer buf, count_buf;
+    VkDeviceSize off, count_off;
+    uint32_t capacity, stride;
+} QDrawIndCount;
+void q_vkCmdDrawIndexedIndirectCount(VkCommandBuffer cb, VkBuffer buf, VkDeviceSize off,
+                                    VkBuffer count_buf, VkDeviceSize count_off, uint32_t capacity, uint32_t stride) {
+    if (!vkq_enabled()) {
+        (vkCmdDrawIndexedIndirectCount)(cb, buf, off, count_buf, count_off, capacity, stride);
+        return;
+    }
+    QREC(QOP_DRAWIDX_IND_COUNT, cb, QDrawIndCount);
+    *a = (QDrawIndCount){buf, count_buf, off, count_off, capacity, stride};
+    q_commit();
 }
 void q_vkCmdDispatch(VkCommandBuffer cb, uint32_t x, uint32_t y, uint32_t z) {
     if (!vkq_enabled()) { (vkCmdDispatch)(cb, x, y, z); return; }
@@ -542,6 +557,11 @@ static void q_exec(const QHdr *h) {
     case QOP_DRAW: { const QU6 *a = p; (vkCmdDraw)(cb, a->a, a->b, a->c, a->d); break; }
     case QOP_DRAWIDX: { const QU6 *a = p; (vkCmdDrawIndexed)(cb, a->a, a->b, a->c, a->e, a->f); break; }
     case QOP_DRAWIDX_IND: { const QDrawInd *a = p; (vkCmdDrawIndexedIndirect)(cb, a->buf, a->off, a->count, a->stride); break; }
+    case QOP_DRAWIDX_IND_COUNT: {
+        const QDrawIndCount *a = p;
+        (vkCmdDrawIndexedIndirectCount)(cb, a->buf, a->off, a->count_buf, a->count_off, a->capacity, a->stride);
+        break;
+    }
     case QOP_DISPATCH: { const QU6 *a = p; (vkCmdDispatch)(cb, a->a, a->b, a->c); break; }
     case QOP_PIPE: { const QPipe *a = p; (vkCmdBindPipeline)(cb, a->bp, a->p); break; }
     case QOP_SETS: {

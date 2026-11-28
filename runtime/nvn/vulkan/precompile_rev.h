@@ -14,4 +14,6 @@
 
 // 2: [XCDE] GTAO replacement shaders now participate in compile_program / the precompiled SPIR-V set.
 // 3: [XCDE] GitHub #58 / #268: char_light_src anchors on the epilogue instruction so structured CFG applies it.
-#define XCDE_PRECOMPILE_ARTIFACTS_REV 3u
+// 4: Attachment-less rasterizer-discard variants build pre-rasterization-only pipelines.
+// 5: Use the 32-bit guest-heap addressing path in vertex shaders on discrete RADV devices.
+#define XCDE_PRECOMPILE_ARTIFACTS_REV 5u

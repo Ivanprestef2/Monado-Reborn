@@ -191,7 +191,7 @@ static const char *const k_sig_env[] = {
     // translator switches that change the emitted GLSL (runtime/nvn/maxwell/translate.c). SAVE_MSL also adds source
     // annotations (and writes build/glsl), so it changes the translated source/cache key rather than only logging.
     "XCDE_STATIC_STACKS", "XCDE_RSC_PIXEL", "XCDE_D16_REF", "XCDE_SCALED_GATHER", "LARECOMP_NO_DISCARD",
-    "XCDE_HW_FP16", "XCDE_EARLY_FS", "XCDE_STRUCTURED_CFG", "LARECOMP_SAVE_MSL",
+    "XCDE_HW_FP16", "XCDE_EARLY_FS", "XCDE_STRUCTURED_CFG", "XCDE_GMEM_ADDRESS32", "XCDE_VS_ADDRESS32", "LARECOMP_SAVE_MSL",
     // replacement GLSL, source patches and hand-edited stage overrides (runtime/nvn/vulkan/exec.c compile_program)
     "XCDE_BLOOM_PREFILTER", "XCDE_BLOOM_FILTER", "XCDE_GTAO", "XCDE_CHAR_LIGHT", "XCDE_TMAA_TEXEL",
     "XCDE_GLSL_DIR",
