@@ -26,6 +26,7 @@
 
 // [XCDE] T281: per-thread, so precompile workers can translate concurrently (exec.c sets them right before the call).
 _Thread_local uint64_t maxwell_gmem_base, maxwell_gmem_size;
+_Thread_local bool maxwell_vertex_address32;
 bool maxwell_native_fp16 = false;
 const uint8_t *maxwell_dbg_code;
 uint32_t maxwell_dbg_pc;
@@ -1907,12 +1908,32 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         int size = (int)bits(w, 48, 3);
         int64_t off = sbits(w, 20, 24);
         c->info->uses_gmem = true;
-        char addr[256];
-        if (a == RZ) sprintf(addr, "ulong(%lld)", (long long)off);
-        else if (wide) sprintf(addr, "((ulong(%s) << 32 | ulong(%s)) + ulong(%lld))", R(a + 1), R(a), (long long)off);
-        else sprintf(addr, "(ulong(%s) + ulong(%lld))", R(a), (long long)off);
-        sp(&c->body, "    { ulong ga = %s - 0x%llxul; bool ok = ga < 0x%llxul;\n", addr,
-           (unsigned long long)maxwell_gmem_base, (unsigned long long)maxwell_gmem_size);
+        static _Thread_local int narrow = -1, narrow_vertex = -2;
+        if (narrow < 0) {
+            const char *e = getenv("XCDE_GMEM_ADDRESS32");
+            narrow = e && atoi(e) != 0;
+        }
+        if (narrow_vertex == -2) {
+            const char *e = getenv("XCDE_VS_ADDRESS32");
+            narrow_vertex = e ? atoi(e) != 0 : -1;
+        }
+        bool vertex_address32 = narrow_vertex < 0 ? maxwell_vertex_address32 : narrow_vertex != 0;
+        bool address32 = c->glsl && wide && a != RZ && maxwell_gmem_size <= UINT32_MAX &&
+            ((narrow && c->stage == STAGE_FRAGMENT && !store) ||
+             (vertex_address32 && c->stage == STAGE_VERTEX));
+        if (address32) {
+            uint64_t bias = (uint64_t)off - maxwell_gmem_base;
+            sp(&c->body, "    { uint ga = %s + 0x%08xu; bool ok = ga < 0x%08xu && "
+               "%s == 0x%08xu - uint(ga < %s);\n", R(a), (uint32_t)bias,
+               (uint32_t)maxwell_gmem_size, R(a + 1), 0u - (uint32_t)(bias >> 32), R(a));
+        } else {
+            char addr[256];
+            if (a == RZ) sprintf(addr, "ulong(%lld)", (long long)off);
+            else if (wide) sprintf(addr, "((ulong(%s) << 32 | ulong(%s)) + ulong(%lld))", R(a + 1), R(a), (long long)off);
+            else sprintf(addr, "(ulong(%s) + ulong(%lld))", R(a), (long long)off);
+            sp(&c->body, "    { ulong ga = %s - 0x%llxul; bool ok = ga < 0x%llxul;\n", addr,
+               (unsigned long long)maxwell_gmem_base, (unsigned long long)maxwell_gmem_size);
+        }
         static const char *const ld_small[] = {"uint(gmem[ga])", "uint(int(char(gmem[ga])))",
                                                "uint(*(device ushort *)(gmem + ga))", "uint(int(*(device short *)(gmem + ga)))"};
         int nw = size == 5 ? 2 : size >= 6 ? 4 : 1;
@@ -1965,9 +1986,14 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                 "uint(sx8(gmem_.w[uint(ga >> 2)] >> (uint(ga & 3ul) * 8u)))",
                 "(gmem_.w[uint(ga >> 2)] >> (uint(ga & 2ul) * 8u)) & 0xFFFFu",
                 "uint(sx16(gmem_.w[uint(ga >> 2)] >> (uint(ga & 2ul) * 8u)))"};
+            static const char *const gl_small32[] = {
+                "(gmem_.w[ga >> 2] >> ((ga & 3u) * 8u)) & 0xFFu",
+                "uint(sx8(gmem_.w[ga >> 2] >> ((ga & 3u) * 8u)))",
+                "(gmem_.w[ga >> 2] >> ((ga & 2u) * 8u)) & 0xFFFFu",
+                "uint(sx16(gmem_.w[ga >> 2] >> ((ga & 2u) * 8u)))"};
             if (!store) {
                 if (size < 4) {
-                    if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      if (ok) r%d = %s; else r%d = 0u;\n", d, gl_small[size], d); }
+                    if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      if (ok) r%d = %s; else r%d = 0u;\n", d, (address32 ? gl_small32 : gl_small)[size], d); }
                 } else {
                     // [XCDE] Perf: hoist ok check & word index once across multi-word LDG (LDG.64 / LDG.128)
                     sp(&c->body, "      if (ok) { uint gw_ = uint(ga >> 2);");
@@ -1986,7 +2012,8 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                 c->info->uses_gmem_store = true;  // [XCDE] T134: the executor orders later draws after this one
                 if (size < 4)
                     sp(&c->body, "      if (ok) { uint wi = uint(ga >> 2); uint sh = uint(ga & %s) * 8u; atomicAnd(gmem_.w[wi], ~(0x%xu << sh)); "
-                       "atomicOr(gmem_.w[wi], (%s & 0x%xu) << sh); }\n", size < 2 ? "3ul" : "2ul", size < 2 ? 0xFFu : 0xFFFFu, R(d),
+                       "atomicOr(gmem_.w[wi], (%s & 0x%xu) << sh); }\n",
+                       size < 2 ? (address32 ? "3u" : "3ul") : (address32 ? "2u" : "2ul"), size < 2 ? 0xFFu : 0xFFFFu, R(d),
                        size < 2 ? 0xFFu : 0xFFFFu);
                 else {
                     sp(&c->body, "      if (ok) { uint gw_ = uint(ga >> 2);");
@@ -2369,7 +2396,12 @@ static ShaderInfo *glsl_finish(Ctx *c, int flow_mode, bool dbg) {
     if (c->fail) { free(body.buf); free(c->body.buf); free(c); return info; }
     int set = stage == STAGE_FRAGMENT ? 1 : stage == STAGE_GEOMETRY ? 2 : 0;  // [XCDE] geometry: set 2
     bool xfb = stage == STAGE_VERTEX && key && key->xfb_n;  // [XCDE] T134: transform feedback: stores to the heap
-    if (xfb) { info->uses_gmem = true; c->uses_gmem_store = true; info->uses_gmem_store = true; }
+    if (xfb) {
+        info->xfb_only_store = !info->uses_gmem_store && !c->uses_gmem_store;
+        info->uses_gmem = true;
+        c->uses_gmem_store = true;
+        info->uses_gmem_store = true;
+    }
     Str s = {0};
     {   // [XCDE] optional extensions emitted right after #version, before the rest of glsl_prelude
         bool any_image = false;

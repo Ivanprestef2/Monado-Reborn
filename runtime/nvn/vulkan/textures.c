@@ -1160,15 +1160,28 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
             t->height, t->format, t->layout.levels, t->layout.layers, (prof_tex_full_bytes - h0) / 1048576.0, b->astc_bw != 0,
             up_wc_ns / 1e6, up_hash_ns / 1e6, up_cmd_ns / 1e6, up_tr_ns / 1e6, up_cp_ns / 1e6, (unsigned)t->flags, (unsigned long long)t->stride);
 }
+static bool texture_upload_exact(void) {
+    static int exact = -1;  // XCDE_TEX_EXACT=1: every texture every frame, full hash (T122 experiments)
+    if (exact < 0) exact = getenv("XCDE_TEX_EXACT") != NULL;
+    return exact;
+}
+
+static bool texture_upload_due(const TexBackend *b, uint64_t frame) {
+    if (!b->uploaded) return true;
+    if (b->checked_frame == frame) return false;
+    return texture_upload_exact() || b->dynamic || !((frame + ((uintptr_t)b >> 6)) & 7);
+}
+
+bool vk_texture_sample_ready(const TexBackend *b) {
+    return b->uploaded && !b->pending_rgba && !dz_nchecks && !texture_upload_due(b, vk_frame_counter());
+}
+
 static void upload_texture_(NvnTexture *t, TexBackend *b) {
     if (b->gpu_owned) vk_feedback_write_boundary();
     if (!t->addr || t->target == 10) return;
     if (dz_nchecks) dz_check_poll();  // (XCDE_DZ_CHECK)
     uint64_t frame = vk_frame_counter();
-    if (b->uploaded && b->checked_frame == frame) return;
-    static int exact = -1;  // XCDE_TEX_EXACT=1: every texture every frame, full hash (T122 experiments)
-    if (exact < 0) exact = getenv("XCDE_TEX_EXACT") != NULL;
-    if (!exact && b->uploaded && !b->dynamic && ((frame + ((uintptr_t)b >> 6)) & 7)) return;
+    if (!texture_upload_due(b, frame)) return;
     const FormatInfo *fi = t->layout.fmt;
     if (!fi || !fi->bpb) return;
     uint64_t total = b->total_size;
@@ -1182,7 +1195,7 @@ static void upload_texture_(NvnTexture *t, TexBackend *b) {
     if (full_hash_budget_frame != frame) { full_hash_budget_frame = frame; full_hash_budget = 512 << 10; }
     const uint8_t *mem = (const uint8_t *)(uintptr_t)t->addr;
     static int always_full = -1;
-    if (always_full < 0) always_full = getenv("LARECOMP_TEX_FULLHASH") || exact ? 1 : 0;
+    if (always_full < 0) always_full = getenv("LARECOMP_TEX_FULLHASH") || texture_upload_exact();
     bool full = b->dynamic || !b->uploaded || always_full;
     static int64_t periodic_frames = -1;
     if (periodic_frames < 0) { const char *e = getenv("XCDE_TEX_PERIODIC"); periodic_frames = e ? atoll(e) : 600; }

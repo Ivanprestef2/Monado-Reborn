@@ -35,6 +35,7 @@ VkResult q_vkEndCommandBuffer(VkCommandBuffer);
 void q_vkCmdDraw(VkCommandBuffer, uint32_t, uint32_t, uint32_t, uint32_t);
 void q_vkCmdDrawIndexed(VkCommandBuffer, uint32_t, uint32_t, uint32_t, int32_t, uint32_t);
 void q_vkCmdDrawIndexedIndirect(VkCommandBuffer, VkBuffer, VkDeviceSize, uint32_t, uint32_t);
+void q_vkCmdDrawIndexedIndirectCount(VkCommandBuffer, VkBuffer, VkDeviceSize, VkBuffer, VkDeviceSize, uint32_t, uint32_t);
 void q_vkCmdSetPolygonModeEXT(VkCommandBuffer, VkPolygonMode);
 void q_vkCmdSetColorBlendEnableEXT(VkCommandBuffer, uint32_t, uint32_t, const VkBool32 *);
 void q_vkCmdSetColorBlendEquationEXT(VkCommandBuffer, uint32_t, uint32_t, const VkColorBlendEquationEXT *);
@@ -103,6 +104,7 @@ void q_vkCmdPushDescriptorSetCompact(PFN_vkCmdPushDescriptorSetKHR, VkCommandBuf
 #define vkCmdDraw(...) q_vkCmdDraw(__VA_ARGS__)
 #define vkCmdDrawIndexed(...) q_vkCmdDrawIndexed(__VA_ARGS__)
 #define vkCmdDrawIndexedIndirect(...) q_vkCmdDrawIndexedIndirect(__VA_ARGS__)
+#define vkCmdDrawIndexedIndirectCount(...) q_vkCmdDrawIndexedIndirectCount(__VA_ARGS__)
 #define vkCmdSetPolygonModeEXT(...) q_vkCmdSetPolygonModeEXT(__VA_ARGS__)
 #define vkCmdSetColorBlendEnableEXT(...) q_vkCmdSetColorBlendEnableEXT(__VA_ARGS__)
 #define vkCmdSetColorBlendEquationEXT(...) q_vkCmdSetColorBlendEquationEXT(__VA_ARGS__)

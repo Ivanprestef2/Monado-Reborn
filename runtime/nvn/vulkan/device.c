@@ -512,6 +512,8 @@ static void create_device(void) {
                                                              .dynamicRendering = render_have.dynamicRendering, .pNext = &sync_enable};
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
                                             .timelineSemaphore = h12.timelineSemaphore, .shaderInt8 = h12.shaderInt8,
+                                            .drawIndirectCount = h12.drawIndirectCount,
+                                            .shaderSampledImageArrayNonUniformIndexing = h12.shaderSampledImageArrayNonUniformIndexing,
                                             .samplerMirrorClampToEdge = h12.samplerMirrorClampToEdge,
                                             .uniformAndStorageBuffer8BitAccess = h12.uniformAndStorageBuffer8BitAccess,
                                             .storageBuffer8BitAccess = h12.storageBuffer8BitAccess,
@@ -520,15 +522,18 @@ static void create_device(void) {
                                             .pNext = legacy ? (void *)&render_enable : (void *)&f13,
                                             .samplerFilterMinmax = h12.samplerFilterMinmax};  // [XCDE] NVN reduction filters
     g_vk.minmax = h12.samplerFilterMinmax;
+    g_vk.draw_indirect_count = f12.drawIndirectCount == VK_TRUE;
     g_vk.shader_float16 = f12.shaderFloat16 == VK_TRUE;
     maxwell_native_fp16 = g_vk.shader_float16;
     VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gplf = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT,
                                                                .graphicsPipelineLibrary = VK_TRUE, .pNext = &f12};
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+                                            .shaderDrawParameters = h11.shaderDrawParameters,
                                             .storageBuffer16BitAccess = h11.storageBuffer16BitAccess,
                                             .variablePointersStorageBuffer = h11.variablePointersStorageBuffer,
                                             .variablePointers = h11.variablePointers,
                                             .pNext = gpl ? (void *)&gplf : (void *)&f12};
+    g_vk.draw_material_indexing = f11.shaderDrawParameters && f12.shaderSampledImageArrayNonUniformIndexing;
     VkPhysicalDeviceFaultFeaturesEXT ff = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT,
                                            .deviceFault = fault ? VK_TRUE : VK_FALSE, .pNext = &f11};
     LOG("[vk] optional features: int8=%u 8bit-buffer=%u scalar-layout=%u float16=%u storage16=%u "
@@ -1717,8 +1722,8 @@ void backend_present(NvnTexture *t) {
     g_debug_frame = debug_at && total_frames >= (uint64_t)debug_at && total_frames < (uint64_t)debug_at + (uint64_t)debug_n;
     {   // LARECOMP_GPUPROF_AT=<frame>[,<frame>...]: GPU time per pass of those frames ("[gpuprof]" in the log)
         extern bool g_gpuprof_frame;
-        extern void vk_gpuprof_report(void);
-        if (g_gpuprof_frame) { g_gpuprof_frame = false; vk_gpuprof_report(); }
+        extern void vk_gpuprof_report(uint64_t frame);
+        if (g_gpuprof_frame) { g_gpuprof_frame = false; vk_gpuprof_report(total_frames - 1); }
         const char *e = getenv("LARECOMP_GPUPROF_AT");
         for (const char *p = e; p && *p;) {
             long at = strtol(p, (char **)&p, 10);
