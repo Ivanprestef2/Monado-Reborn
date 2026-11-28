@@ -340,7 +340,7 @@ NVN(nvnCommandBufferBindStorageBuffer) {
     memcpy(r->extra, &s.x[3], 16);
 }
 // (cmd, stage, first, count, const handle*)
-NVN(nvnCommandBufferBindTextures) {
+static void bind_textures(Cpu *c) {
     NvnCmdBuf *cb = cb_of(A(0));
     uint32_t stg = (uint32_t)A(1), first = (uint32_t)A(2), cnt = (uint32_t)A(3);
     const uint64_t *src = (const uint64_t *)(uintptr_t)A(4);
@@ -354,7 +354,7 @@ NVN(nvnCommandBufferBindTextures) {
     }
     record_copy(c, CMD_BIND_TEXTURES, 4, cnt * 8);
 }
-NVN(nvnCommandBufferBindTexture) {
+static void bind_texture(Cpu *c) {
     Snap s = snap(c);
     NvnCmdBuf *cb = cb_of(s.x[0]);
     if (s.x[1] < 6 && s.x[2] < 32 && cmdbuf_elide_on()) {
@@ -367,6 +367,8 @@ NVN(nvnCommandBufferBindTexture) {
     r->x[0] = s.x[1]; r->x[1] = s.x[2]; r->x[2] = 1;
     memcpy(r->extra, &s.x[3], 8);
 }
+NVN(nvnCommandBufferBindTextures) { bind_textures(c); }
+NVN(nvnCommandBufferBindTexture) { bind_texture(c); }
 NVN(nvnCommandBufferBindImages) { record_copy(c, CMD_BIND_IMAGES, 4, (uint32_t)A(3) * 8); }
 NVN(nvnCommandBufferBindImage) {
     Snap s = snap(c);
@@ -374,13 +376,8 @@ NVN(nvnCommandBufferBindImage) {
     r->x[0] = s.x[1]; r->x[1] = s.x[2]; r->x[2] = 1;
     memcpy(r->extra, &s.x[3], 8);
 }
-NVN(nvnCommandBufferBindSeparateTextures) { record_copy(c, CMD_BIND_TEXTURES, 4, (uint32_t)A(3) * 8); }
-NVN(nvnCommandBufferBindSeparateTexture) {
-    Snap s = snap(c);
-    CmdRec *r = record(c, CMD_BIND_TEXTURES, 8, &s);
-    r->x[0] = s.x[1]; r->x[1] = s.x[2]; r->x[2] = 1;
-    memcpy(r->extra, &s.x[3], 8);
-}
+NVN(nvnCommandBufferBindSeparateTextures) { bind_textures(c); }
+NVN(nvnCommandBufferBindSeparateTexture) { bind_texture(c); }
 NVN(nvnCommandBufferBindSeparateSamplers) { (void)c; }
 NVN(nvnCommandBufferBindSeparateSampler) { (void)c; }
 // [XCDE] T134: transform feedback - (cmd, first, count, const NVNbufferRange*) and (cmd, index, address, size)
