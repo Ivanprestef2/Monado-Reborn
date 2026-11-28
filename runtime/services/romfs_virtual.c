@@ -27,8 +27,8 @@
 
 typedef struct Dir Dir;
 // [XCDE] T280: src/base: a file inside a .nup package is read from the package at base (src NULL: the file at path)
-typedef struct { char *name, *path; const char *src; uint64_t base, size, data_off; uint32_t off; Dir *parent; int index; uint8_t *mem; bool traced; } File;
-struct Dir { char *name, *path; Dir *parent; Dir **dirs; File **files; int ndirs, nfiles; uint32_t off; };
+typedef struct { char *name, *path; const char *src; uint64_t base, size, data_off; uint32_t off, sibling; Dir *parent; int index; uint8_t *mem; bool traced; } File;
+struct Dir { char *name, *path; Dir *parent; Dir **dirs; File **files; int ndirs, nfiles; uint32_t off, sibling; };
 typedef struct { Dir **dirs; File **files; int nd, nf, cd, cf; } Lists;
 
 static uint8_t *g_hdr_tables;  // header (0x200) .. data gap .. tables are served from separate buffers below
@@ -349,6 +349,15 @@ bool rvfs_init(const char *dir, char *why, size_t why_size) {
     uint32_t dsize = 0, fsize = 0;
     for (int i = 0; i < l.nd; i++) l.dirs[i]->off = dsize, dsize += 0x18 + align4((uint32_t)strlen(l.dirs[i]->name));
     for (int i = 0; i < l.nf; i++) l.files[i]->off = fsize, fsize += 0x20 + align4((uint32_t)strlen(l.files[i]->name));
+    // [XCDE] T283: set sibling links in one pass over each parent's sorted children.
+    root->sibling = EMPTY;
+    for (int i = 0; i < l.nd; i++) {
+        Dir *d = l.dirs[i];
+        for (int j = 0; j < d->ndirs; j++)
+            d->dirs[j]->sibling = j + 1 < d->ndirs ? d->dirs[j + 1]->off : EMPTY;
+        for (int j = 0; j < d->nfiles; j++)
+            d->files[j]->sibling = j + 1 < d->nfiles ? d->files[j + 1]->off : EMPTY;
+    }
     uint64_t data = 0;
     for (int i = 0; i < l.nf; i++) {
         data = align16(data);
@@ -371,12 +380,9 @@ bool rvfs_init(const char *dir, char *why, size_t why_size) {
     for (int i = 0; i < l.nd; i++) {
         Dir *d = l.dirs[i];
         uint8_t *e = dtab + d->off;
-        uint32_t parent = d->parent ? d->parent->off : 0, nl = (uint32_t)strlen(d->name), sib = EMPTY;
-        if (d->parent)
-            for (int k = 0; k + 1 < d->parent->ndirs; k++)
-                if (d->parent->dirs[k] == d) sib = d->parent->dirs[k + 1]->off;
+        uint32_t parent = d->parent ? d->parent->off : 0, nl = (uint32_t)strlen(d->name);
         uint32_t h = name_hash(parent, d->name) % nbd;
-        put32(e, parent), put32(e + 4, sib);
+        put32(e, parent), put32(e + 4, d->sibling);
         put32(e + 8, d->ndirs ? d->dirs[0]->off : EMPTY);
         put32(e + 12, d->nfiles ? d->files[0]->off : EMPTY);
         put32(e + 16, dbuckets[h]), put32(e + 20, nl);
@@ -386,11 +392,9 @@ bool rvfs_init(const char *dir, char *why, size_t why_size) {
     for (int i = 0; i < l.nf; i++) {
         File *f = l.files[i];
         uint8_t *e = ftab + f->off;
-        uint32_t nl = (uint32_t)strlen(f->name), sib = EMPTY;
-        for (int k = 0; k + 1 < f->parent->nfiles; k++)
-            if (f->parent->files[k] == f) sib = f->parent->files[k + 1]->off;
+        uint32_t nl = (uint32_t)strlen(f->name);
         uint32_t h = name_hash(f->parent->off, f->name) % nbf;
-        put32(e, f->parent->off), put32(e + 4, sib);
+        put32(e, f->parent->off), put32(e + 4, f->sibling);
         put64(e + 8, f->data_off), put64(e + 16, f->size);
         put32(e + 24, fbuckets[h]), put32(e + 28, nl);
         memcpy(e + 0x20, f->name, nl);
@@ -423,10 +427,10 @@ static void copy_mem(uint8_t *dst, uint64_t off, uint64_t n, const uint8_t *src,
     memcpy(dst, src + (off - src_off), (size_t)n);
 }
 
-// Reads `size` bytes at image offset `off` into dst; bytes outside any file or table read as zero. Returns bytes.
+// Reads image bytes, with zero padding between assets. A failed asset read returns -1.
 int64_t rvfs_read(uint8_t *dst, uint64_t size, uint64_t off) {
     if (off >= g_image_size) return 0;
-    if (off + size > g_image_size) size = g_image_size - off;
+    if (size > g_image_size - off) size = g_image_size - off;
     plat_will_write((uint64_t)(uintptr_t)dst, size);
     uint64_t done = 0;
     while (done < size) {
@@ -469,10 +473,14 @@ int64_t rvfs_read(uint8_t *dst, uint64_t size, uint64_t off) {
                 int slot, fd = file_fd(hit, &slot);
                 // [XCDE] T280: a 64-bit offset (a file deep in a 15 GB package; off_t is 32-bit in the Windows build)
                 int64_t r = fd >= 0 ? gf_pread_at(fd, dst + done, n, f->base + in) : -1;
+                int error = fd < 0 && errno ? errno : EIO;
                 file_fd_release(fd, slot);
-                if (r < 0) rt_logf("[romfs] read error %s +%llx (%llu bytes): zero-filled\n", g_files[hit]->path, (unsigned long long)in, (unsigned long long)n);
-                if (r < 0) r = 0;
-                if ((uint64_t)r < n) memset(dst + done + r, 0, (size_t)(n - r));
+                if (r < 0 || (uint64_t)r != n) {
+                    rt_logf("[romfs] %s +%llx: expected %llu bytes, got %lld (%s)\n",
+                            f->path, (unsigned long long)in, (unsigned long long)n, (long long)r, strerror(error));
+                    errno = error;
+                    return -1;
+                }
             } else {  // padding between files
                 uint64_t next = (hit + 1 < g_nfiles) ? DATA_START + g_files[hit + 1]->data_off : g_data_end;
                 if (n > next - o) n = next - o;

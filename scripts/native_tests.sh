@@ -7,7 +7,7 @@ Z=".venv/Scripts/python -m ziglang cc -I$M/include"
 mkdir -p build/test build/rt
 $Z -c runtime/platform/windows.c -o build/rt/platform_windows.o -O1 -w -Iruntime
 $Z -O1 -w -Iruntime -o build/test/test_fibers.exe tests/native/test_fibers.c runtime/hle/fibers.c
-$Z -O1 -w -Iruntime -o build/test/test_condvar.exe tests/native/test_condvar.c build/rt/platform_windows.o runtime/log.c runtime/diag/diag.c runtime/diag/sampler.c $M/lib/libwinpthread.dll.a -lwinmm -ldbghelp
+$Z -O1 -w -Iruntime -o build/test/test_condvar.exe tests/native/test_condvar.c runtime/ipc.c build/rt/platform_windows.o runtime/log.c runtime/diag/diag.c runtime/diag/sampler.c $M/lib/libwinpthread.dll.a -lwinmm -ldbghelp
 build/test/test_fibers.exe
 build/test/test_condvar.exe
 # [XCDE] T275: the timestamped log prefix (one per line, partial lines continue; timestamped unit test).

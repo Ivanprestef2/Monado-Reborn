@@ -136,9 +136,9 @@ class VulkanSourceContracts(unittest.TestCase):
         """GitHub #265: FSR 3 FG present sync, ring-buffered HUDLessColor, and bounded exit wait."""
         temporal = (ROOT / "runtime/nvn/vulkan/temporal_fg.inc").read_text(encoding="utf-8")
         exec_c = (ROOT / "runtime/nvn/vulkan/exec.c").read_text(encoding="utf-8")
-        self.assertIn("#define DONE_SEMS 16", DEVICE)
-        self.assertIn("done_sem[DONE_SEMS]", DEVICE)
-        self.assertIn("tmp_fg_wait_presents();", DEVICE)
+        self.assertIn("VkSemaphore *sem = &present_sem[image];", DEVICE)
+        self.assertIn("fg_present_sem[FG_PRESENT_SLOTS]", DEVICE)
+        self.assertIn("if (!fg_present_slot && fg_present_sem[0]) tmp_fg_wait_presents();", DEVICE)
         self.assertIn("backend_is_stalled()", DEVICE)
         self.assertIn("exit_watchdog_thread", DEVICE)
         self.assertIn("bool backend_is_stalled(void)", exec_c)

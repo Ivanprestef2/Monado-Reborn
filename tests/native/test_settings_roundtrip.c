@@ -151,7 +151,7 @@ int main(int argc, char **argv) {
     g_settings.hotkey_party = XCDE_KEY_F3;
     g_settings.hotkey_screenshot = XCDE_KEY_PRINTSCREEN;
     g_settings.hotkey_hud = XCDE_KEY_NONE;
-    settings_save();
+    assert(settings_save());
     g_settings.fullscreen_mode = FULLSCREEN_BORDERLESS;
     g_settings.display_index = -1;
     g_settings.audio_device[0] = 0;
@@ -176,5 +176,13 @@ int main(int argc, char **argv) {
         assert(settings_mod_priority("mod_z") == 0 && settings_mod_priority("mod_a") == 1);
         assert(settings_mod_priority("unlisted") > settings_mod_priority("mod_a"));
     }
+    char invalid_path[1024];
+    assert(snprintf(invalid_path, sizeof invalid_path, "%s/xcde.ini", argv[1]) < (int)sizeof invalid_path);
+#ifdef _WIN32
+    assert(!_putenv_s("XCDE_INI", invalid_path));
+#else
+    assert(!setenv("XCDE_INI", invalid_path, 1));
+#endif
+    assert(!settings_save());  // the existing INI cannot also be a parent directory
     assert(!remove(argv[1])); puts("settings round-trip: stable GPU ID, policies, 1.5x, window size, unknown keys and default reset OK"); return 0;
 }

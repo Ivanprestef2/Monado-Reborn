@@ -7,6 +7,7 @@ baked into the runtime at package time (-DGAMELIB_ID) and into the library at bu
 time. Keep it in one place: the packagers and the builder both read it here.
 """
 import hashlib
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -20,6 +21,7 @@ SOURCES = (
     'games/xcde/patches.py',
     'games/xcde/hle_symbols.txt',
     'runtime/cpu.h',
+    'runtime/gamelib.h',
     'runtime/simd.h',
     'runtime/simd_fp.h',
     # the profile the player's build compiles with (docs/guides/PGO.md): a new one rebuilds the library
@@ -28,13 +30,12 @@ SOURCES = (
 
 # Guest translation units are plain C. They are compiled to PIC objects and linked
 # into a shared library that the runtime loads; no C++ or host headers are involved.
-# -O2: the level the profile-guided build works at (docs/guides/PGO.md; with the profile, 6% less CPU time per frame than
-# -O2 alone, which is itself 1% ahead of -O1). zig spells the CPU level x86_64_v2. The profile's own flags are added by
+# zig spells the CPU level x86_64_v2. The profile's own flags are added by
 # tools/gamebuild/gamebuild.py when the package stages one (link.json "pgo").
 GUEST_FLAGS = (
     # -g0: zig emits debug info by default; the player does not need it and it
     # multiplies the object files (3.7 MB instead of 0.6 MB per chunk).
-    '-g0', '-O2', '-march=x86_64_v2', '-ffp-contract=off', '-fno-strict-aliasing',
+    '-g0', '-O3', '-march=x86_64_v2', '-ffp-contract=off', '-fno-strict-aliasing',
     '-fvisibility=hidden', '-D_GNU_SOURCE', '-w',
 )
 
@@ -60,4 +61,7 @@ def fingerprint():
 
 
 if __name__ == '__main__':
-    print(fingerprint())
+    if sys.argv[1:] == ['--inputs']:
+        print('\n'.join(str(ROOT / name) for name in sources()))
+    else:
+        print(fingerprint())

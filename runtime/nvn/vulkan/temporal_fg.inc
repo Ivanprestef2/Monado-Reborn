@@ -58,7 +58,8 @@ void tmp_fg_wait_presents(void) {
     if (!fg_active || !fgsc_ctx) return;
     struct ffxDispatchDescFrameGenerationSwapChainWaitForPresentsVK d = {
         .header = {.type = FFX_API_DISPATCH_DESC_TYPE_FGSWAPCHAIN_WAIT_FOR_PRESENTS_VK}};
-    ffx_dispatch(&fgsc_ctx, &d.header);
+    if (ffx_dispatch(&fgsc_ctx, &d.header) != FFX_API_RETURN_OK)
+        FATAL("[tmp] could not drain frame-generation presents\n");
 }
 
 // [XCDE] T224: frame generation for the whole game (frame_gen) or only for cutscenes held at 30 (cutscenes = 30fg). The

@@ -42,7 +42,8 @@ const char *dlss_status(void);
 bool diag_deterministic(void);
 bool tmp_jitter_active(void);  // a temporal upscaler is selected: the game's TAA is off (runtime/hle/graphics.c)
 void plat_terminate(void);  // [XCDE] GitHub #22: the F1 menu's "exit the game" button (the platform's immediate exit)
-void audio_notify_device_change(void);  // [XCDE] live 5.1/stereo hot-swap (runtime/services/audio.c)
+void audio_select_device(const char *name);  // [XCDE] live audio hot-swap (runtime/services/audio.c)
+void audio_select_channels(int mode);
 const SDL_DisplayMode *xcde_pick_exclusive_mode(SDL_Window *win, SDL_DisplayMode *out);
 // [XCDE] GitHub #39: what the performance overlay (perf_overlay.h) reads
 int xcde_present_fps(void);
@@ -723,16 +724,14 @@ static void ui(void) {
                 const char *cur = g_settings.audio_device[0] ? g_settings.audio_device : (en ? "System default" : "Predeterminado del sistema");
                 if (monado_begin_combo(en ? "Audio device" : "Dispositivo de audio", cur)) {
                     if (ImGui::Selectable(en ? "System default" : "Predeterminado del sistema", !g_settings.audio_device[0])) {
-                        g_settings.audio_device[0] = 0;
-                        audio_notify_device_change();
+                        audio_select_device("");
                     }
                     for (int i = 0; devs && i < ndev; i++) {
                         const char *dn = SDL_GetAudioDeviceName(devs[i]);
                         if (!dn || !*dn) continue;
                         bool sel = !strcmp(g_settings.audio_device, dn);
                         if (ImGui::Selectable(dn, sel)) {
-                            snprintf(g_settings.audio_device, sizeof g_settings.audio_device, "%s", dn);
-                            audio_notify_device_change();
+                            audio_select_device(dn);
                         }
                     }
                     ImGui::EndCombo();
@@ -742,8 +741,7 @@ static void ui(void) {
             static const char *audio_modes[] = {"Automático (5.1 si es compatible)", "Estéreo (2.0)", "Envolvente 5.1"};
             int am = audio_out_valid(g_settings.audio_channels);
             if (monado_combo(T("Salida de audio"), &am, TL(audio_modes, AUDIO_OUT_COUNT).p, AUDIO_OUT_COUNT)) {
-                g_settings.audio_channels = audio_out_valid(am);
-                audio_notify_device_change();
+                audio_select_channels(am);
             }
             ImGui::SetItemTooltip("%s", g_settings.ui_lang
                 ? "Auto uses 5.1 LPCM surround on 5.1/7.1 devices and Stereo otherwise.\nThe Switch game mixes up to 5.1 (SDL maps 5.1 onto 7.1 devices). Applies live."
@@ -799,7 +797,11 @@ static void ui(void) {
         dirty = true;
     }
     ImGui::Separator();
-    if (ImGui::Button(g_settings.ui_lang ? "Apply" : "Aplicar")) { settings_save(); saved_note = true; dirty = false; }
+    if (ImGui::Button(g_settings.ui_lang ? "Apply" : "Aplicar")) {
+        saved_note = settings_save();
+        dirty = !saved_note;
+        if (dirty) menu_toast(g_settings.ui_lang ? "Could not save settings" : "No se pudieron guardar los ajustes");
+    }
     ImGui::SameLine();
     if (ImGui::Button(T("Volver al juego"))) { open_ = false; input_reset(); }
     ImGui::SameLine();

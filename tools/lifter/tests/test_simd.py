@@ -269,7 +269,7 @@ def make_case(r, w):
 
 def compile_tests(work, bodies, jobs, cflags):
     cc = os.environ.get('CC', 'clang')
-    flags = ['-O1'] + cflags.split() + ['-fno-strict-aliasing', '-Wno-unused-label', '-I',
+    flags = ['-O3'] + cflags.split() + ['-ffp-contract=off', '-fno-strict-aliasing', '-Wno-unused-label', '-I',
              os.path.join(ROOT, 'runtime')]
     n = max(1, min(jobs, len(bodies) // 200 + 1))
     per = (len(bodies) + n - 1) // n
@@ -296,7 +296,7 @@ def compile_tests(work, bodies, jobs, cflags):
         if p.wait():
             raise SystemExit('compile failed')
     exe = os.path.join(work, 'harness.exe' if os.name == 'nt' else 'harness')
-    subprocess.check_call([cc, '-o', exe] + objs)
+    subprocess.check_call([cc, '-o', exe] + objs + ['-lm'])
     return exe
 
 
@@ -421,14 +421,17 @@ def main():
                        capture_output=True)
     if p.returncode:
         print('harness failed', p.returncode, p.stderr.decode()[-2000:])
-    data = open(outp, 'rb').read()
+        return 1
+    with open(outp, 'rb') as output:
+        data = output.read()
+    if not cases or len(data) != len(cases) * OUT_SIZE:
+        print(f'harness output size mismatch: got {len(data)} bytes for {len(cases)} cases')
+        return 1
     print(f'harness: {len(data) // OUT_SIZE} cases ({time.time() - t3:.0f}s)')
     fails = {}
     nfail = 0
     for i, ((k, fpcr, x, sp, nzcv, v, st), (ex, esp, enz, ev, emh)) in enumerate(zip(cases, expect)):
         rec = data[i * OUT_SIZE:(i + 1) * OUT_SIZE]
-        if len(rec) < OUT_SIZE:
-            break
         hx_ = struct.unpack_from('<31Q', rec, 0)
         hsp, hnz, hmh = struct.unpack_from('<QQQ', rec, 248)
         hv = [int.from_bytes(rec[272 + 16 * j:288 + 16 * j], 'little') for j in range(32)]

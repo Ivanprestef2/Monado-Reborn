@@ -243,10 +243,13 @@ void settings_load(void) {
         g_settings.dynamic_min_height = g_settings.dynamic_max_height;
 }
 
-void settings_save(void) {
+bool settings_save(void) {
     char tmp[1200];
     FILE *f = xcde_ini_begin(ini_path(), tmp, sizeof tmp);
-    if (!f) return;
+    if (!f) {
+        rt_logf("[settings] could not open temporary configuration for writing\n");
+        return false;
+    }
     static const char *res[] = {"match", "1", "2", "3", "4", "5", "6", "7", "8", "dynamic", "75%", "25%", "50%", "1.5"};
     fprintf(f, "# Monado settings (the launcher writes this file)\n");
     fprintf(f, "fullscreen = %d\nfullscreen_mode = %s\ndisplay_index = %d\nwindow = %dx%d\n",
@@ -323,7 +326,9 @@ void settings_save(void) {
     if (g_game_dump[0]) fprintf(f, "game_dump = %s\n", g_game_dump);
     fprintf(f, "gamebuild_in_dump = %d\n", g_gamebuild_in_dump ? 1 : 0);
     bind_settings_save(f);
-    if (!xcde_ini_commit(f, tmp, ini_path())) rt_logf("[settings] save failed; previous configuration kept\n");
+    if (xcde_ini_commit(f, tmp, ini_path())) return true;
+    rt_logf("[settings] save failed; previous configuration kept\n");
+    return false;
 }
 
 // The language served to the game: the setting; "auto" stays English (what every test route was recorded with).

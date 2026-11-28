@@ -14,6 +14,13 @@ Spanish on 2026-10-25) and `CONTRIBUTING.md` (the project rules, "constitution")
 
 ---
 
+## Runtime and build review follow-up
+
+- [x] T283 **Runtime and build reliability.** Protect save recovery, thread and service lifetimes, RomFS reads,
+  audio-device transitions, and present synchronization. Correct Linux launcher handoff and incremental build
+  invalidation. Default shipped builds to `-O3`. Req: FR-020, FR-022, FR-053, SC-001, SC-006.
+  Done when the no-game native and Python regressions pass and Linux source and release builds compile.
+
 ## M0 — Foundations
 
 - [x] T001 [M0] Initialise git; pin `upstream/lasrecomp` (`136f679`) and `upstream/ssbu-recomp` (`938e66b`) as

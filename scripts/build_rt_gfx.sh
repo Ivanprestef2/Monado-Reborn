@@ -8,7 +8,7 @@
 # The game objects (build/obj) come from scripts/build_boot.sh. The window build of main_boot gets -DXCDE_GFX.
 cd "$(dirname "$0")/.."
 Z=".venv/Scripts/python -m ziglang cc"
-CF="-O1 -march=x86_64_v2 -fno-strict-aliasing -fvisibility=hidden -Iruntime -Iruntime/nvn -Ithird_party -I/c/msys64/ucrt64/include -w"
+CF="-O3 -march=x86_64_v2 -fno-strict-aliasing -fvisibility=hidden -Iruntime -Iruntime/nvn -Ithird_party -I/c/msys64/ucrt64/include -w"
 RT="loader dispatch kernel ipc fnprof log platform/windows services/fs services/romfs_virtual services/game_files services/am services/acc services/time
     services/hid_set services/kbicons services/misc services/audio services/hwopus hle/heaps hle/pl hle/vi hle/nvn_boot hle/fibers hle/input hle/party
     hle/bindings hle/movie hle/framepace hle/foliage_distance hle/foliage_pool hle/graphics hle/cheats_options hle/cheats_combat hle/cheats_rewards hle/cheats_enemy_health hle/title_exit hle/system_exit hle/desktop_exit_caption hle/expanded_saves hle/expanded_save_scan hle/quickstep_native hle/quickstep_picker hle/quickstep_save hle/quickstep_slot hle/quickstep_stats hle/quickstep_stats_ui hle/quickstep_ui_memory hle/collision_bvh host/stubs host/settings_ini host/gamelib_static host/main_boot diag/diag diag/sampler diag/watchdog
@@ -26,7 +26,6 @@ for f in $RT; do
   pick "$f" || continue
   o=build/rt/$(echo $f | tr / _).o; extra=""
   [ "$f" = host/main_boot ] && { o=build/rt/host_main_boot_gfx.o; extra="-DXCDE_GFX"; }
-  case "$f" in kernel|platform/windows|hle/collision_bvh) extra="$extra -O2" ;; esac
   $Z -c runtime/$f.c -o $o.$$.tmp $CF -DGAMELIB_ID='"dev"' $extra && mv -f $o.$$.tmp $o || { echo "FAIL $f"; fail=1; }  # (tmp + rename: a parallel link never reads half an object)
 done
 for f in $NVN; do
@@ -34,7 +33,6 @@ for f in $NVN; do
   # links a current XCDE_SHADER_SIG (see above).
   [ "$f" = vulkan/precompile_sig ] || pick "nvn/$f" || continue
   extra=""
-  case "$f" in cmdbuf|objects|vulkan/device|vulkan/exec|vulkan/post|vulkan/temporal|vulkan/textures|vulkan/vkq) extra="-O2" ;; esac
   if [ "$f" = smaa_data ]; then  # [XCDE] the SMAA reference shader (third_party/smaa, MIT) as a C string
     mkdir -p build/inc
     .venv/Scripts/python tools/build/gen_smaa_inc.py third_party/smaa/SMAA.hlsl build/inc/smaa_hlsl.inc || fail=1
@@ -54,20 +52,20 @@ if pick ui/menu; then
   I=third_party/imgui
   for f in $I/imgui.cpp $I/imgui_draw.cpp $I/imgui_tables.cpp $I/imgui_widgets.cpp $I/backends/imgui_impl_vulkan.cpp \
            runtime/nvn/vulkan/imgui_glue.cpp runtime/ui/menu_vk.cpp; do
-    .venv/Scripts/python -m ziglang c++ -c $f -o build/nvn/ui_$(basename ${f%.cpp}).o -std=c++17 -O1 -march=x86_64_v2 \
+    .venv/Scripts/python -m ziglang c++ -c $f -o build/nvn/ui_$(basename ${f%.cpp}).o -std=c++17 -O3 -march=x86_64_v2 \
       -fvisibility=hidden -Iruntime -Iruntime/nvn -Iruntime/nvn/vulkan -I$I -I$I/backends -idirafter /c/msys64/ucrt64/include -w \
       || { echo "FAIL $f"; fail=1; }
   done
 fi
 # [XCDE] NVIDIA DLSS through Streamline (C++ headers, third_party/streamline, MIT)
 if pick nvn/vulkan/dlss; then
-  .venv/Scripts/python -m ziglang c++ -c runtime/nvn/vulkan/dlss.cpp -o build/nvn/nvn_vulkan_dlss.o -std=c++17     -O1 -march=x86_64_v2 -fvisibility=hidden -Iruntime -Iruntime/nvn -Ithird_party/streamline/include -idirafter /c/msys64/ucrt64/include -w     || { echo "FAIL nvn/vulkan/dlss"; fail=1; }
+  .venv/Scripts/python -m ziglang c++ -c runtime/nvn/vulkan/dlss.cpp -o build/nvn/nvn_vulkan_dlss.o -std=c++17     -O3 -march=x86_64_v2 -fvisibility=hidden -Iruntime -Iruntime/nvn -Ithird_party/streamline/include -idirafter /c/msys64/ucrt64/include -w     || { echo "FAIL nvn/vulkan/dlss"; fail=1; }
 fi
 # [XCDE] Vulkan Memory Allocator (header-only, MSYS2 vulkan-memory-allocator) and the path helpers: built here with the
 # same baseline CPU as everything else. (Built by hand before: vma.o carried AVX-512 from the build PC's CPU, so the
 # game would stop with an illegal instruction on CPUs without it.)
 if pick nvn/vulkan/vma; then
-  .venv/Scripts/python -m ziglang c++ -c runtime/nvn/vulkan/vma.cpp -o build/nvn/vma.o -std=c++17 -O2 -march=x86_64_v2 -fvisibility=hidden -idirafter /c/msys64/ucrt64/include -w || { echo "FAIL nvn/vulkan/vma"; fail=1; }
+  .venv/Scripts/python -m ziglang c++ -c runtime/nvn/vulkan/vma.cpp -o build/nvn/vma.o -std=c++17 -O3 -march=x86_64_v2 -fvisibility=hidden -idirafter /c/msys64/ucrt64/include -w || { echo "FAIL nvn/vulkan/vma"; fail=1; }
 fi
 if pick paths; then
   $Z -c runtime/paths.c -o build/nvn/paths.o $CF -DGAMELIB_ID='"dev"' || { echo "FAIL paths"; fail=1; }

@@ -75,6 +75,7 @@ int64_t gf_pread_at(int fd, void *dst, uint64_t n, uint64_t off) {
 #else
     while (done < n) {
         ssize_t got = pread(fd, (uint8_t *)dst + done, (size_t)(n - done), (off_t)(off + done));
+        if (got < 0 && errno == EINTR) continue;
         if (got <= 0) break;
         done += (uint64_t)got;
     }

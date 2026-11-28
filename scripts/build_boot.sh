@@ -6,11 +6,21 @@
 set -e
 cd "$(dirname "$0")/.."
 Z=".venv/Scripts/python -m ziglang cc"; export Z
-CF="-O1 -march=x86_64_v2 -ffp-contract=off -fno-strict-aliasing -fvisibility=hidden -Iruntime -w"; export CF
+CF="-O3 -march=x86_64_v2 -ffp-contract=off -fno-strict-aliasing -fvisibility=hidden -Iruntime -w"; export CF
 mkdir -p build/obj/main build/obj/sdk build/rt
 # drop objects whose chunk no longer exists (the chunk layout shifts when the generator output changes)
 for o in build/obj/*/*.o; do m=$(basename "$(dirname "$o")"); b=$(basename "$o" .o); [ -f "generated/$m/$b.c" ] || rm -f "$o"; done
-cc1() { f=$1; m=$(basename "$(dirname "$f")"); b=$(basename "$f" .c); o="build/obj/$m/$b.o"; [ "$o" -nt "$f" ] || $Z -c "$f" -o "$o" $CF || echo "FAIL $f"; }
+cc1() {
+  local source=$1 module object
+  module=$(basename "$(dirname "$source")")
+  object="build/obj/$module/$(basename "$source" .c).o"
+  if [[ $object -nt $source && $object -nt scripts/build_boot.sh &&
+        $object -nt runtime/cpu.h && $object -nt runtime/simd.h && $object -nt runtime/simd_fp.h ]]; then
+    return
+  fi
+  $Z -c "$source" -o "$object.$BASHPID.tmp" $CF &&
+    mv -f "$object.$BASHPID.tmp" "$object" || { rm -f "$object.$BASHPID.tmp"; echo "FAIL $source" >&2; return 1; }
+}
 export -f cc1
 ls generated/main/*.c generated/sdk/*.c | xargs -P "${JOBS:-16}" -I{} bash -c 'cc1 {}'
 for f in loader dispatch kernel ipc fnprof log platform/windows services/fs services/romfs_virtual services/game_files services/am services/acc \

@@ -26,11 +26,13 @@ Exit codes: 0 ok, 1 usage, 2 bad game files, 3 generation failed, 4 compile fail
 """
 import argparse
 import faulthandler
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -416,30 +418,37 @@ def report(out, phase, done, total, text='', fraction=None):
         pass  # a progress file the launcher cannot read must never fail the build
 
 
+def file_digest(path):
+    with path.open('rb') as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
+
+
 def fingerprint(dump, resources, link):
-    """Everything a rebuild depends on: the generator/ABI id, the dump and the link inputs."""
-    import hashlib
+    """Fingerprint the contents that determine the resulting game library."""
     h = hashlib.sha256()
     h.update((resources / 'gamelib-id.txt').read_text(encoding='utf-8').strip().encode())
     h.update(json.dumps(link, sort_keys=True).encode())
+    h.update(json.dumps(local_isa_flags()).encode())
     package = nup_package(dump)
     for name, relative in (('main', 'exefs/main'), ('sdk', 'exefs/sdk')):
-        if package:  # (a package copied or rebuilt with the same modules needs no new build: their size and build id)
-            head = package.read(relative, 0x60)
-            h.update(f'{name} nup {package.sizes[package.find(relative)]} {head[0x40:0x60].hex()}\n'.encode())
-            continue
-        path = dump / relative
-        st = path.stat()
-        h.update(f'{name} {st.st_size} {int(st.st_mtime)}\n'.encode())
-    for extra in link.get('link_files', []):
-        path = resources / extra
-        if path.is_file():
-            h.update(path.name.encode())
-            h.update(str(path.stat().st_size).encode())
-    crt = resources / 'crt'
-    if crt.is_dir():
-        for path in sorted(crt.iterdir()):
-            h.update(f'{path.name} {path.stat().st_size}\n'.encode())
+        if package:
+            module = package.read(relative)
+            if len(module) != package.sizes[package.find(relative)]:
+                raise nup.NupError(f'{package.path}: short read of {relative}')
+            digest = hashlib.sha256(module).hexdigest()
+        else:
+            digest = file_digest(dump / relative)
+        h.update(f'{name} {digest}\n'.encode())
+    paths = [resources / file for file in link.get('link_files', [])]
+    paths.extend((resources / 'crt').rglob('*'))
+    paths.extend((resources / 'entry').rglob('*'))
+    for directory in link.get('include', ['include']):
+        paths.extend((resources / directory).rglob('*'))
+    for key in ('compiler', 'pgo'):
+        if link.get(key):
+            paths.append(resources / link[key])
+    for path in sorted(p for p in paths if not p.is_dir()):
+        h.update(f'{path.relative_to(resources).as_posix()} {file_digest(path)}\n'.encode())
     return h.hexdigest()
 
 
@@ -527,9 +536,6 @@ def compiler_env(resources, out, link):
     return env
 
 
-_PGO_FLAGS = {}
-
-
 _LOCAL_ISA_FLAGS = None
 
 
@@ -575,13 +581,9 @@ def pgo_flags(resources, link):
     if not link.get('pgo'):
         return []
     path = resources / link['pgo']
-    if path not in _PGO_FLAGS:
-        import hashlib
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
-        _PGO_FLAGS[path] = [f'-fprofile-use={path}', '-Wno-profile-instr-unprofiled', '-Wno-profile-instr-out-of-date',
-                            '-Wno-backend-plugin', '-mllvm', '-static-func-full-module-prefix=false',
-                            f'-DMONADO_PGO_ID={digest}']
-    return _PGO_FLAGS[path]
+    digest = file_digest(path)[:16]
+    return [f'-fprofile-use={path}', '-Wno-profile-instr-unprofiled', '-Wno-profile-instr-out-of-date',
+            '-Wno-backend-plugin', '-mllvm', '-static-func-full-module-prefix=false', f'-DMONADO_PGO_ID={digest}']
 
 
 # A chunk missing from compile_cost.json: about 1.3 s per MB of C (the median chunk of the reference build).
@@ -613,7 +615,7 @@ def write_compile_costs(log_path, dest):
     print(f'gamebuild: {len(seconds)} chunk times -> {dest}')
 
 
-def compile_units(resources, out, link, jobs, log):
+def compile_units(resources, out, link, jobs, log, current, force=False):
     """Compile every generated chunk with the bundled compiler, in parallel."""
     compiler = resources / link['compiler']
     generated = out / 'generated'
@@ -625,9 +627,11 @@ def compile_units(resources, out, link, jobs, log):
     objects.mkdir(parents=True, exist_ok=True)
     stamp = out / 'build.json'
     previous = {}
-    if stamp.is_file():
+    if not force and stamp.is_file():
         try:
-            previous = json.loads(stamp.read_text(encoding='utf-8')).get('units', {})
+            prior = json.loads(stamp.read_text(encoding='utf-8'))
+            if prior.get('fingerprint') == current:
+                previous = prior.get('units', {})
         except (OSError, ValueError):
             previous = {}
     # The slowest chunks start first, so the end of the build is many small chunks in parallel instead of one that
@@ -650,20 +654,27 @@ def compile_units(resources, out, link, jobs, log):
             done[1] += costs[source]
             report(out, 'compile', done[0], len(units), f'Compiling {key}', done[1] / total_cost)
 
+    compiler_args = ([str(compiler)] + list(link.get('compile', ['cc'])) + list(link.get('guest_flags', [])) +
+                     local_isa_flags() + pgo_flags(resources, link) + [f'-I{item}' for item in include])
+
     def build(source):
         target = objects / source.parent.name / (source.stem + '.o')
         target.parent.mkdir(parents=True, exist_ok=True)
         key = source.relative_to(generated).as_posix()
-        signature = f'{sizes[source]} {int(source.stat().st_mtime)}'
+        signature = file_digest(source)
         if previous.get(key) == signature and target.is_file():
             finished(source, key)
             return key, signature, target
-        command = ([str(compiler)] + list(link.get('compile', ['cc'])) + list(link.get('guest_flags', [])) +
-                   local_isa_flags() + pgo_flags(resources, link) +
-                   [f'-I{item}' for item in include] + ['-c', str(source), '-o', str(target)])
-        result = run_tool(command, compiler_env(resources, out, link), log, f'compile {key}', COMPILE_TIMEOUT)
-        if result.returncode != 0:
-            failures.append(f'{key}:\n{result.stdout}{result.stderr}')
+        temporary = target.with_name(f'{target.name}.{os.getpid()}.tmp')
+        try:
+            command = compiler_args + ['-c', str(source), '-o', str(temporary)]
+            result = run_tool(command, compiler_env(resources, out, link), log, f'compile {key}', COMPILE_TIMEOUT)
+            if result.returncode:
+                failures.append(f'{key}:\n{result.stdout}{result.stderr}')
+            else:
+                os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
         finished(source, key)
         return key, signature, target
 
@@ -695,26 +706,45 @@ def link_library(resources, out, link, units, log):
     library = out / os.path.basename(link['library'])
     inputs = ([str(entry)] + [str(target) for _, _, target in units] +
               [str(resources / extra) for extra in link.get('link_files', [])])
-    if link.get('lld'):
-        args = []
-        for arg in link['lld']:
-            if arg == '{inputs}':
-                args += inputs
-            else:
-                args.append(arg.replace('{crt}', str(resources / 'crt')).replace('{dir}', str(out))
-                            .replace('{entry}', entry.stem).replace('{name}', library.stem))
-        response = out / 'link.rsp'
-        response.write_text(''.join(f'"{arg}"\n' for arg in args), encoding='utf-8')
-        command = [str(compiler), 'lld-link', f'@{response}']
-    else:
-        command = [str(compiler)] + list(link.get('link', ['cc', '-shared'])) + inputs + ['-v', '-o', str(library)]
-    result = run_tool(command, env, log, 'link', LINK_TIMEOUT, stream=True)
-    if result.returncode != 0:
-        raise SystemExit('gamebuild: linking the game code library failed')
-    # What the runtime reads before loading it (runtime/gamelib.c), and the launcher's own record.
-    library.with_name(library.name + '.id').write_text(
-        (resources / 'gamelib-id.txt').read_text(encoding='utf-8').strip() + '\n', encoding='utf-8')
+    with tempfile.TemporaryDirectory(prefix='link-', dir=out) as directory:
+        staged = Path(directory) / library.name
+        if link.get('lld'):
+            args = []
+            for arg in link['lld']:
+                if arg == '{inputs}':
+                    args += inputs
+                else:
+                    args.append(arg.replace('{crt}', str(resources / 'crt')).replace('{dir}', directory)
+                                .replace('{entry}', entry.stem).replace('{name}', library.stem))
+            response = staged.with_name('link.rsp')
+            response.write_text(''.join(f'"{arg}"\n' for arg in args), encoding='utf-8')
+            command = [str(compiler), 'lld-link', f'@{response}']
+        else:
+            command = [str(compiler)] + list(link.get('link', ['cc', '-shared'])) + inputs + ['-v', '-o', str(staged)]
+        result = run_tool(command, env, log, 'link', LINK_TIMEOUT, stream=True)
+        if result.returncode != 0:
+            raise SystemExit('gamebuild: linking the game code library failed')
+        staged_id = staged.with_name(staged.name + '.id')
+        staged_id.write_text(
+            (resources / 'gamelib-id.txt').read_text(encoding='utf-8').strip() + '\n', encoding='utf-8')
+        os.replace(staged, library)
+        os.replace(staged_id, library.with_name(library.name + '.id'))
     return library
+
+
+def lock_build(file):
+    """Take the output directory's build lock, which is released on close or exit."""
+    if os.name == 'nt':
+        import msvcrt
+        file.seek(0, os.SEEK_END)
+        if not file.tell():
+            file.write(b'\0')
+            file.flush()
+        file.seek(0)
+        msvcrt.locking(file.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
 def main(argv=None):
@@ -758,11 +788,32 @@ def main(argv=None):
     if args.precompile:
         _launcher_build_share[0] = PRECOMPILE_BUILD_SHARE
     library = out / os.path.basename(link['library'])
-    current = fingerprint(dump, resources, link)
-    stamp = out / 'build.json'
-    if not args.force and stamp.is_file() and library.is_file():
+    if args.strict_dump:
+        validate(dump, resources, strict=True)
+    try:
+        current = fingerprint(dump, resources, link)
+    except (OSError, nup.NupError) as error:
+        print(f'gamebuild: {error}', flush=True)
+        return 2
+    if args.dry_run:
+        return build_game(args, dump, resources, link, out, library, jobs, current)
+    out.mkdir(parents=True, exist_ok=True)
+    with (out / '.build.lock').open('a+b') as lock:
         try:
-            if json.loads(stamp.read_text(encoding='utf-8')).get('fingerprint') == current:
+            lock_build(lock)
+        except OSError as error:
+            raise SystemExit(f'gamebuild: could not lock {out} for this build: {error}') from error
+        return build_game(args, dump, resources, link, out, library, jobs, current)
+
+
+def build_game(args, dump, resources, link, out, library, jobs, current):
+    stamp = out / 'build.json'
+    library_id = library.with_name(library.name + '.id')
+    if not args.force and stamp.is_file() and library.is_file() and library_id.is_file():
+        try:
+            if (json.loads(stamp.read_text(encoding='utf-8')).get('fingerprint') == current and
+                library_id.read_text(encoding='utf-8').strip() ==
+                    (resources / 'gamelib-id.txt').read_text(encoding='utf-8').strip()):
                 print(f'gamebuild: up to date: {library}')
                 report(out, 'link', 1, 1, 'Already built')
                 if args.precompile:
@@ -770,12 +821,12 @@ def main(argv=None):
                 return 0
         except (OSError, ValueError):
             pass
-    validate(dump, resources, strict=args.strict_dump)
+    if not args.strict_dump:
+        validate(dump, resources)
     if args.dry_run:
         print(f'gamebuild: would build {library} from {dump} with {resources / link["compiler"]}')
         return 0
     started = time.time()
-    out.mkdir(parents=True, exist_ok=True)
     for name in ('progress.txt', 'gamebuild.log'):
         (out / name).unlink(missing_ok=True)
     with (out / 'gamebuild.log').open('w', encoding='utf-8', errors='replace') as log:
@@ -791,7 +842,7 @@ def main(argv=None):
             note(log, 'generate: start')
             modules = generate_modules(dump, resources, out, jobs, log)
             note(log, f'generate: done; compile: start ({jobs} at a time)')
-            units = compile_units(resources, out, link, jobs, log)
+            units = compile_units(resources, out, link, jobs, log, current, args.force)
             note(log, 'compile: done; link: start')
             report(out, 'link', 0, 1, 'Linking the game code')
             link_library(resources, out, link, units, log)
@@ -804,13 +855,15 @@ def main(argv=None):
             raise
         finally:
             faulthandler.disable()
-        stamp.write_text(json.dumps({
+        temporary = stamp.with_name(f'{stamp.name}.{os.getpid()}.tmp')
+        temporary.write_text(json.dumps({
             'fingerprint': current,
             'gamelib_id': (resources / 'gamelib-id.txt').read_text(encoding='utf-8').strip(),
             'library': str(library),
             'units': {key: signature for key, signature, _ in units},
             'modules': [m['name'] for m in modules],
         }, indent=2) + '\n', encoding='utf-8')
+        os.replace(temporary, stamp)
         # The generated C is large and reproducible from the dump; the objects keep
         # rebuilds cheap, so only the sources are dropped.
         shutil.rmtree(out / 'generated', ignore_errors=True)

@@ -1,9 +1,7 @@
 #!/bin/sh
 # [XCDE] T-LINUX-APPIMAGE: the AppImage mount is read-only, so everything the game and the launcher write (xcde.ini,
-# cache/, saves, logs in build/) lives in a data folder outside it. That folder gets two links, refreshed at every
-# start, so the launcher and the game keep the repository layout they use everywhere else:
-#   <data>/targets           -> the game dump (exefs/ + romfs/)
-#   <data>/build/linux/monado -> the game executable inside this mount
+# cache/, saves, logs in build/) lives outside it. <data>/build/linux/monado points to the mounted executable.
+# --play can remember a directory via <data>/targets. The launcher remembers an explicit dump in xcde.ini.
 #   ./Monado-x86_64.AppImage [dump directory]       launcher (or the game directly if xcde.ini has skip_launcher = 1)
 #   ./Monado-x86_64.AppImage --play [dump directory] the game directly
 #   ./Monado-x86_64.AppImage --launcher [dump dir]   force the launcher even when skip_launcher = 1
@@ -11,7 +9,7 @@
 #   ./Monado-x86_64.AppImage --prepare <builder args> the first-start game code builder (RecompLauncher's setup step)
 # RecompLauncher (recomplauncher.json) unpacks the AppImage into the game's install folder and passes that folder as
 # MONADO_DATA_ROOT, so Linux keeps the Windows package's layout (xcde.ini, save/ and gamebuild/ in the install folder).
-# The dump: the argument, else MONADO_GAME_ROOT, else targets/ next to the AppImage, else the one linked last time.
+# The dump: the argument, else MONADO_GAME_ROOT, else targets/ next to the AppImage, else the remembered dump.
 # The data folder (GitHub #88): MONADO_DATA_ROOT, else a monado-data folder next to the AppImage when there is one
 # (portable: everything stays beside it), else $XDG_DATA_HOME/monado (~/.local/share/monado, as runtime/platform/linux.c).
 # Before, it was $XDG_DATA_HOME/lasrecomp, the folder LASRecomp's Link's Awakening recomp uses too: one that holds
@@ -66,7 +64,11 @@ esac
 root=${1:-${MONADO_GAME_ROOT:-}}
 if [ "$#" -gt 0 ]; then shift; fi
 if [ -n "$game_opt" ] && [ -z "$root" ]; then echo "--game needs the dump directory (exefs/ + romfs/)" >&2; exit 2; fi
-if [ -z "$root" ] && [ -n "${APPIMAGE:-}" ] && [ -d "$(dirname -- "$APPIMAGE")/targets" ]; then root="$(dirname -- "$APPIMAGE")/targets"; fi
+nearby_dump=
+if [ -z "$root" ] && [ -n "${APPIMAGE:-}" ] && [ -d "$(dirname -- "$APPIMAGE")/targets" ]; then
+  nearby_dump="$(dirname -- "$APPIMAGE")/targets"
+  case "$nearby_dump" in /*) ;; *) nearby_dump="$PWD/$nearby_dump";; esac
+fi
 case "$root" in ""|/*) ;; *) root="$PWD/$root";; esac
 data=${MONADO_DATA_ROOT:-}
 if [ -z "$data" ] && [ -n "${APPIMAGE:-}" ] && [ -d "$(dirname -- "$APPIMAGE")/monado-data" ]; then
@@ -80,71 +82,83 @@ fi
 mkdir -p -- "$data/build/linux"
 data=$(CDPATH= cd -- "$data" && pwd)
 export LARECOMP_DATA_ROOT="$data"
-dump=
-if [ -n "$game_opt" ] && [ -f "$root" ] && [ "$(head -c 3 -- "$root" 2>/dev/null)" = NUP ]; then
-  # [XCDE] T280: --game with a .nup package, read in place by the game (runtime/services/game_files.c). Only --game:
-  # the other modes link the dump as targets/, a folder the launcher reads.
-  dump="$(CDPATH= cd -- "$(dirname -- "$root")" && pwd -P)/$(basename -- "$root")"
-elif [ -n "$root" ]; then
-  [ -f "$root/exefs/main" ] && [ -d "$root/romfs" ] || { echo "$root must contain exefs/main and romfs/ (your dump)" >&2; exit 2; }
-  # GitHub #86 (Steam Deck): with the AppImage inside the data folder, "targets next to the AppImage" IS
-  # $data/targets, and a logical pwd gave back that link's own path, so it was relinked to itself (a loop: the dump
-  # vanished at the next start, launched from Game Mode). pwd -P resolves the real folder; a link that already
-  # points there is left alone.
-  dump=$(CDPATH= cd -- "$root" && pwd -P)
-  # --game: no targets link. RecompLauncher moves, backs up and removes the install folder (the data folder there) as
-  # a whole, and a link inside it would lead those to the player's own dump.
-  if [ -z "$game_opt" ] && [ "$(CDPATH= cd -- "$data/targets" 2>/dev/null && pwd -P)" != "$dump" ]; then
-    ln -sfn -- "$dump" "$data/targets" 2>/dev/null || true
-  fi
-fi
-ln -sfn -- "$appdir/usr/bin/monado" "$data/build/linux/monado" 2>/dev/null || true
-cd -- "$data"
-if [ -z "$direct" ] && [ -z "$force_launcher" ]; then
-  ini="${XCDE_INI:-xcde.ini}"
-  if [ -f "$ini" ] && [ -f targets/exefs/main ] && awk -F= '
+ini="${XCDE_INI:-xcde.ini}"
+ini_value() {
+  [ -f "$ini" ] || return 0
+  awk -v key="$1" '
     NR == 1 { sub(/^\357\273\277/, "") }
     {
-      sub(/\r$/, "")
-      k = $1; gsub(/^[ \t]+|[ \t]+$/, "", k)
-      if (k == "skip_launcher") {
-        v = $2; gsub(/^[ \t]+|[ \t]+$/, "", v)
-        val = (v == "1" || v == "true") ? 1 : 0
+      eq = index($0, "=")
+      if (!eq) next
+      k = substr($0, 1, eq - 1); gsub(/^[ \t]+|[ \t]+$/, "", k)
+      if (k == key) {
+        v = substr($0, eq + 1); gsub(/^[ \t]+|[ \t\r]+$/, "", v)
+        val = v
       }
     }
-    END { exit !val }
-  ' "$ini"; then
-    # Release AppImages build libmonado_game.so in the launcher on first run / update; fall back to the launcher if missing or stale.
-    if [ -z "${XCDE_GAMEBUILD_DIR:-}" ] || [ ! -f "$XCDE_GAMEBUILD_DIR/gamelib-id.txt" ] || [ -f "$appdir/usr/bin/libmonado_game.so" ] || (
-      [ -f gamebuild/libmonado_game.so ] && [ -f gamebuild/libmonado_game.so.id ] &&
-      [ "$(tr -d '\r\n ' < gamebuild/libmonado_game.so.id)" = "$(tr -d '\r\n ' < "$XCDE_GAMEBUILD_DIR/gamelib-id.txt")" ]
+    END { if (length(val) > 0) print val }
+  ' "$ini"
+}
+is_nup() {
+  [ -f "$1" ] && [ "$(head -c 4 -- "$1" 2>/dev/null)" = "$(printf 'NUP\001')" ]
+}
+
+ln -sfn -- "$appdir/usr/bin/monado" "$data/build/linux/monado" 2>/dev/null || true
+cd -- "$data"
+dump=
+new_dump=
+if [ -z "$root" ]; then
+  remembered=$(ini_value game_dump)
+  if { [ -f "$remembered/exefs/main" ] && [ -d "$remembered/romfs" ]; } || is_nup "$remembered"; then
+    dump="$remembered"
+  else
+    root="$nearby_dump"
+  fi
+fi
+if { [ -n "$game_opt" ] || [ -z "$direct" ]; } && is_nup "$root"; then
+  # [XCDE] T280: .nup packages stay in place.
+  dump="$(CDPATH= cd -- "$(dirname -- "$root")" && pwd -P)/$(basename -- "$root")"
+  new_dump=1
+elif [ -n "$root" ]; then
+  [ -f "$root/exefs/main" ] && [ -d "$root/romfs" ] || { echo "$root must contain exefs/main and romfs/ (your dump)" >&2; exit 2; }
+  dump=$(CDPATH= cd -- "$root" && pwd -P)
+  new_dump=1
+  # Keep the existing --play shortcut for later launches. -T prevents ln from
+  # creating a child link inside a real targets directory.
+  if [ -n "$direct" ] && [ -z "$game_opt" ] &&
+     { [ -L "$data/targets" ] || [ ! -e "$data/targets" ]; } &&
+     [ "$(CDPATH= cd -- "$data/targets" 2>/dev/null && pwd -P)" != "$dump" ]; then
+    ln -sfnT -- "$dump" "$data/targets"
+  fi
+fi
+if [ -z "$direct" ] && [ -z "$force_launcher" ]; then
+  skip_launcher=$(ini_value skip_launcher)
+  if { [ "$skip_launcher" = 1 ] || [ "$skip_launcher" = true ]; } &&
+     { [ -n "$dump" ] || [ -f targets/exefs/main ]; }; then
+    build_dir=gamebuild
+    in_dump=$(ini_value gamebuild_in_dump)
+    if [ "$in_dump" = 1 ] || [ "$in_dump" = true ]; then
+      build_root=${dump:-targets}
+      if [ -f "$build_root" ]; then build_root=$(dirname -- "$build_root"); fi
+      build_dir="$build_root/gamebuild"
+    fi
+    # A release needs a compatible game library from the first-start builder.
+    if [ -z "${XCDE_GAMEBUILD_DIR:-}" ] || [ -f "$appdir/usr/bin/lasgame.so" ] || (
+      [ -f "$build_dir/lasgame.so" ] && [ -s "$build_dir/lasgame.so.id" ] && [ -s "$XCDE_GAMEBUILD_DIR/gamelib-id.txt" ] &&
+      [ "$(tr -d '\r\n ' < "$build_dir/lasgame.so.id")" = "$(tr -d '\r\n ' < "$XCDE_GAMEBUILD_DIR/gamelib-id.txt")" ]
     ); then
       direct=1
     fi
   fi
 fi
-if [ -z "$direct" ]; then exec "$appdir/usr/bin/monado-launcher" "$@"; fi
+if [ -z "$direct" ]; then
+  if [ -n "$force_launcher" ]; then set -- --launcher "$@"; fi
+  if [ -n "$new_dump" ]; then
+    exec "$appdir/usr/bin/monado-launcher" --dump "$dump" "$@"
+  fi
+  exec "$appdir/usr/bin/monado-launcher" "$@"
+fi
 if [ -n "$game_opt" ]; then exec "$appdir/usr/bin/monado" --game "$dump" "$@"; fi
 if [ -n "$dump" ]; then exec "$appdir/usr/bin/monado" "$dump" "$@"; fi
-# [XCDE] GitHub #259: when launched directly (--play, e.g. Steam Deck Game Mode) without an argument, remember the
-# dump folder/package recorded by the launcher in xcde.ini (works even without a targets/ symlink).
-if [ -f "$data/xcde.ini" ]; then
-  ini_dump=$(awk -F= '
-    NR == 1 { sub(/^\xef\xbb\xbf/, "") }
-    /^[[:space:]]*game_dump[[:space:]]*=/ {
-      v = substr($0, index($0, "=") + 1)
-      gsub(/^[[:space:]]+|[[:space:]\r]+$/, "", v)
-      if (length(v) > 0) val = v
-    }
-    END { if (length(val) > 0) print val }
-  ' "$data/xcde.ini")
-  if [ -n "$ini_dump" ]; then
-    if [ -f "$ini_dump/exefs/main" ] && [ -d "$ini_dump/romfs" ]; then
-      exec "$appdir/usr/bin/monado" "$ini_dump" "$@"
-    elif [ -f "$ini_dump" ] && [ "$(head -c 3 -- "$ini_dump" 2>/dev/null)" = NUP ]; then
-      exec "$appdir/usr/bin/monado" "$ini_dump" "$@"
-    fi
-  fi
-fi
 [ -f targets/exefs/main ] || { echo "No game dump: pass its directory once (it is remembered)" >&2; exit 2; }
 exec "$appdir/usr/bin/monado" targets "$@"
