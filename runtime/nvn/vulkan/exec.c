@@ -3478,11 +3478,18 @@ static uint32_t pipe_count(void) { return pipe_tab.n; }
 // target whose alpha isn't written, and the colour ones of a target whose RGB isn't written, give values that are
 // discarded - set to the NVN defaults (ONE, ZERO, ADD). XCDE_CANON=0: off.
 static inline void pipe_key_canon(PipeKey *k) {
+    if (g_vk.eds3) {
+        memset(k->write_mask, 0, sizeof k->write_mask);
+        k->blend_on = 0;
+        memset(k->blend, 0, sizeof k->blend);
+        k->poly_fill = 1;
+        return;
+    }
     static int on = -1;
     if (__builtin_expect(on < 0, 0)) on = !(getenv("XCDE_CANON") && atoi(getenv("XCDE_CANON")) == 0);
     if (__builtin_expect(!on, 0)) return;
     if (__builtin_expect(k->prog && k->prog->no_fs, 0)) {
-        memset(k->write_mask, 0, 8);
+        memset(k->write_mask, 0, sizeof k->write_mask);
         k->blend_on = 0;
         memset(k->blend, 0, sizeof k->blend);
         return;
@@ -8362,7 +8369,7 @@ static void draw_(CmdRec *r, bool indexed) {
             if (st.poly[3] & 3) audit("polygon offset for point/line modes %#x ignored", st.poly[3]);
         }
         k.topo_class = cls;
-        k.poly_fill = g_vk.eds3 ? 1 : (st.poly[2] != 1);
+        k.poly_fill = st.poly[2] != 1;
         pipe_key_canon(&k);  // [XCDE] T195
         uint64_t ph = hash_words(0xcbf29ce484222325ull, &k, sizeof k);
         if (!ph) ph = 1;
